@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=RayMothFM
+GenericName=File Manager
+Comment=Lightweight graphical file manager
+Exec=raymothfm %U
+Icon=system-file-manager
+Terminal=false
+StartupNotify=true
+Categories=System;FileTools;FileManager;
+MimeType=inode/directory;
