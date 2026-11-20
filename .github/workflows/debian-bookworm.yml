@@ -97,10 +97,23 @@ jobs:
           test -s "$stage/usr/share/doc/raymothfm/NOTICE"
           rm -rf "$stage"
 
-      - name: Upload Bookworm Lite binary
+      - name: Build Debian package
+        run: |
+          sh distro/debian/build-package.sh
+          dpkg-deb --contents dist/*.deb
+
+      - name: Upload Debian package
         uses: actions/upload-artifact@v4
         with:
-          name: raymothfm-bookworm-lite-x86_64
+          name: raymothfm-debian12-bookworm
+          path: dist/*.deb
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload standalone binary (optional)
+        uses: actions/upload-artifact@v4
+        with:
+          name: raymothfm-bookworm-lite-binary
           path: code/raymothfm
           if-no-files-found: error
           retention-days: 7
