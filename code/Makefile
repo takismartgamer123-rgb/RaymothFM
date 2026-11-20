@@ -69,15 +69,25 @@ strip: $(TARGET)
 PREFIX ?= /usr
 BINDIR ?= $(PREFIX)/bin
 DATADIR ?= $(PREFIX)/share
+DOC_DIR ?= $(DATADIR)/doc/raymothfm
 DESKTOP_FILE := ../distro/debian/raymothfm.desktop
+UPSTREAM_LICENSE := ../LICENSE
+RAYLIB_LICENSE := ../distro/debian/licenses/RAYLIB-5.5.txt
+GLFW_LICENSE := ../distro/debian/licenses/GLFW.txt
+NOTICE_FILE := ../distro/debian/NOTICE
 
 install: $(TARGET)
 	install -Dm755 $(TARGET) $(DESTDIR)$(BINDIR)/raymothfm
 	install -Dm644 $(DESKTOP_FILE) $(DESTDIR)$(DATADIR)/applications/raymothfm.desktop
+	install -Dm644 $(UPSTREAM_LICENSE) $(DESTDIR)$(DOC_DIR)/copyright
+	install -Dm644 $(RAYLIB_LICENSE) $(DESTDIR)$(DOC_DIR)/RAYLIB-5.5.txt
+	install -Dm644 $(GLFW_LICENSE) $(DESTDIR)$(DOC_DIR)/GLFW.txt
+	install -Dm644 $(NOTICE_FILE) $(DESTDIR)$(DOC_DIR)/NOTICE
 
 uninstall:
 	rm -f $(DESTDIR)$(BINDIR)/raymothfm
 	rm -f $(DESTDIR)$(DATADIR)/applications/raymothfm.desktop
+	rm -rf $(DESTDIR)$(DOC_DIR)
 
 clean:
 	rm -f $(TARGET) $(DEBUG_TARGET) $(OBJECTS) $(DEBUG_OBJECTS)
