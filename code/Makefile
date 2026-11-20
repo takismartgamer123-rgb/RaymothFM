@@ -26,9 +26,7 @@ DEBUG_OBJECTS := main.debug.o
 all: $(TARGET)
 
 check-deps:
-	@for pkg in $(PKGS); do \\
-		pkg-config --exists "$$pkg" || { echo "Missing build dependency: $$pkg"; exit 1; }; \\
-	done
+	@set -e; for pkg in $(PKGS); do pkg-config --exists "$pkg" || { echo "Missing build dependency: $pkg"; exit 1; }; done
 
 $(TARGET): $(OBJECTS)
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) $(OBJECTS) -o $@ $(LDLIBS)
