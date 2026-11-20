@@ -1,0 +1,82 @@
+name: Debian 12 Bookworm QA
+
+on:
+  push:
+    branches:
+      - main
+      - gamma-bookworm-lite
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-bookworm:
+    name: Build lightweight profile on Debian 12
+    runs-on: ubuntu-latest
+    container:
+      image: debian:12-slim
+
+    steps:
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            git \
+            pkg-config \
+            libarchive-dev \
+            libmagic-dev \
+            libssl-dev \
+            libgl1-mesa-dev \
+            libx11-dev \
+            libxrandr-dev \
+            libxcursor-dev \
+            libxi-dev \
+            libxinerama-dev \
+            ca-certificates
+          rm -rf /var/lib/apt/lists/*
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build static Raylib
+        run: |
+          git clone --depth 1 --branch 5.5 https://github.com/raysan5/raylib.git /tmp/raylib
+          cmake -S /tmp/raylib -B /tmp/raylib/build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DBUILD_EXAMPLES=OFF \
+            -DUSE_EXTERNAL_GLFW=OFF
+          cmake --build /tmp/raylib/build --parallel "$(nproc)"
+          cmake --install /tmp/raylib/build --prefix /opt/raylib
+          echo "PKG_CONFIG_PATH=/opt/raylib/lib/pkgconfig:/opt/raylib/lib/x86_64-linux-gnu/pkgconfig" >> "$GITHUB_ENV"
+
+      - name: Verify Bookworm dependencies
+        run: |
+          pkg-config --modversion raylib
+          pkg-config --modversion libarchive
+          pkg-config --modversion libmagic
+          pkg-config --modversion openssl
+          if pkg-config --exists vips; then
+            echo "The lightweight CI image unexpectedly contains libvips."
+            exit 1
+          fi
+
+      - name: Build RayMothFM (lite)
+        run: |
+          make -C code clean
+          make -C code --jobs="$(nproc)" WITH_VIPS=0
+
+      - name: Smoke tests and runtime audit
+        run: |
+          set -eu
+          ./code/raymothfm --version
+          ./code/raymothfm --help
+          test_home="$(mktemp -d)"
+          HOME="$test_home" ./code/raymothfm --mkcfg
+          test -s "$test_home/.config/raymothfm/config"
+          ldd ./code/raymothfm | tee /tmp/raymothfm-ldd.txt
+          ! grep -E 'not found|libvips|libraylib\.so' /tmp/raymothfm-ldd.txt
