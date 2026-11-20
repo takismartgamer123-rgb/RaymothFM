@@ -443,7 +443,9 @@ struct Config {
         colorHex(0xc8c8c8), colorHex(0x303030), colorHex(0x111111), colorHex(0xffffff)
     }}; // bg,panel,panel2,text,muted,line,hover,accent
     std::string editor;
-    std::string term = "foot";
+    std::string term = "gamma-terminal";
+    bool terminalMigrationPending = false;
+    bool favoritesConfigured = false;
     std::vector<std::string> favorites;
     fs::path dir;
     fs::path file;
@@ -554,6 +556,7 @@ static Config loadConfig() {
         const fs::path legacy = configBase() / ".raymothfm" / "config";
         in.open(legacy);
     }
+    bool terminalMarkerFound = false;
     std::string line;
     while (std::getline(in, line)) {
         if (line.empty() || line[0] == '#') continue;
@@ -572,12 +575,21 @@ static Config loadConfig() {
         else if (key == "systemtheme" || key == "SYSTEMTHEME") parseSystemTheme(value, c.systemTheme);
         else if (key == "editor" || key == "EDITOR") { c.editor = value; if(c.editor.size()>=2 && c.editor.front()=='"' && c.editor.back()=='"') c.editor=c.editor.substr(1,c.editor.size()-2); }
         else if (key == "term" || key == "TERM") { c.term = value; if(c.term.size()>=2 && c.term.front()=='"' && c.term.back()=='"') c.term=c.term.substr(1,c.term.size()-2); }
-        else if (key == "favorite" && !value.empty()) c.favorites.push_back(value);
+        else if (key == "terminal_migration_done") terminalMarkerFound = true;
+        else if (key == "favorites_configured") c.favoritesConfigured = std::atoi(value.c_str()) != 0;
+        else if (key == "favorite" && !value.empty()) { c.favorites.push_back(value); c.favoritesConfigured = true; }
+    }
+
+    // Migrate the old built-in foot default once for Gamma Linux. A marker is written
+    // afterwards so a user who later selects foot explicitly keeps that choice.
+    if (!terminalMarkerFound && c.term == "foot") {
+        c.term = "gamma-terminal";
+        c.terminalMigrationPending = true;
     }
 
     if (c.editor.empty()) { const char* env=std::getenv("EDITOR"); if(env && *env) c.editor=env; }
 
-    if (c.favorites.empty()) {
+    if (!c.favoritesConfigured && c.favorites.empty()) {
         const std::array<std::pair<const char*, const char*>, 5> defaults = {{{"Desktop", "Desktop"}, {"Documents", "Documents"}, {"Downloads", "Downloads"}, {"Music", "Music"}, {"Pictures", "Pictures"}}};
         for (const auto& [_, fallback] : defaults) {
             fs::path p = homeDir() / fallback;
@@ -591,7 +603,9 @@ static Config loadConfig() {
 
 static void saveConfig(const Config& c, bool allowCreate = false) {
     std::error_code ec;
-    if (!allowCreate && !fs::exists(c.file, ec)) return; // New configs are created only by --mkcfg.
+    if (allowCreate) fs::create_directories(c.dir, ec);
+    else if (!fs::exists(c.file, ec)) return; // New configs are created only by --mkcfg.
+    if (ec) return;
     std::ofstream out(c.file);
     if (!out) return;
     out << "# raymothfm configuration\n";
@@ -611,6 +625,8 @@ static void saveConfig(const Config& c, bool allowCreate = false) {
     out << "\n";
     out << "EDITOR=\"" << c.editor << "\"\n";
     out << "TERM=\"" << c.term << "\"\n";
+    out << "terminal_migration_done=1\n";
+    out << "favorites_configured=" << (c.favoritesConfigured ? 1 : 0) << "\n";
     for (const auto& f : c.favorites) out << "favorite=" << f << "\n";
 }
 
@@ -626,7 +642,7 @@ static bool writeTemplateConfig() {
         return false;
     }
     c.editor = "";
-    c.term = "foot";
+    c.term = "gamma-terminal";
     c.fontScale = 1.15f;
     c.cursorBeam = true;
     c.beamSize = 0.1f;
@@ -3567,6 +3583,7 @@ int main(int argc, char** argv) {
 
     ExplorerState st;
     st.config=loadConfig();
+    if (st.config.terminalMigrationPending) saveConfig(st.config, true);
     st.config.fontScale = std::clamp(st.config.fontScale, 1.0f, 2.5f);
     st.config.beamSize = std::clamp(st.config.beamSize, 0.01f, 2.0f);
     st.flags.cursorBeam = st.config.cursorBeam;
