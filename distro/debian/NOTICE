@@ -1,0 +1,16 @@
+RayMothFM
+
+RayMothFM is the upstream file manager project by Halano (@HalanoSiblee).
+It is distributed under the MIT License; see the repository LICENSE file.
+
+The Debian lightweight build statically links Raylib 5.5. Raylib is by Ramon
+Santamaria (@raysan5) and is distributed under its zlib-style license. The
+Raylib build used here includes GLFW, which carries its own zlib-style license.
+
+The corresponding license notices are installed under:
+  /usr/share/doc/raymothfm/copyright
+  /usr/share/doc/raymothfm/RAYLIB-5.5.txt
+  /usr/share/doc/raymothfm/GLFW.txt
+
+The Gamma Linux Debian build integration is maintained in this fork. It does
+not change the ownership or authorship of the upstream RayMothFM application.
