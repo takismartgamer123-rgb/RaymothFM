@@ -61,3 +61,28 @@ The lightweight profile intentionally trades broad image-conversion support for
 a smaller dependency surface. Raylib's decoder does not promise support for
 every format that libvips can load; unsupported files should fail gracefully
 rather than pull the full image-processing stack into the base installation.
+
+
+## Build a Debian package
+
+After building RayMothFM with the Bookworm Lite profile, install the packaging
+tools and create a native `.deb` package:
+
+```sh
+sudo apt install dpkg-dev
+sh distro/debian/build-package.sh
+```
+
+The script stages the binary, desktop entry, documentation, and license notices,
+then uses `dpkg-shlibdeps` to calculate runtime dependencies from the actual
+binary. The resulting package is written to `dist/` as
+`raymothfm_VERSION-1~bookworm1_ARCH.deb`.
+
+Install it with:
+
+```sh
+sudo apt install ./dist/raymothfm_*.deb
+```
+
+GitHub Actions runs the same package builder on Debian 12 and publishes the
+`.deb` as the `raymothfm-debian12-bookworm` workflow artifact.
