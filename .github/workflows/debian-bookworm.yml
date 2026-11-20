@@ -91,6 +91,10 @@ jobs:
           DESTDIR="$stage" make -C code install
           test -x "$stage/usr/bin/raymothfm"
           test -s "$stage/usr/share/applications/raymothfm.desktop"
+          test -s "$stage/usr/share/doc/raymothfm/copyright"
+          test -s "$stage/usr/share/doc/raymothfm/RAYLIB-5.5.txt"
+          test -s "$stage/usr/share/doc/raymothfm/GLFW.txt"
+          test -s "$stage/usr/share/doc/raymothfm/NOTICE"
           rm -rf "$stage"
 
       - name: Upload Bookworm Lite binary
