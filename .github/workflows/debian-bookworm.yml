@@ -13,31 +13,36 @@ permissions:
 
 jobs:
   build-bookworm:
-    name: Build lightweight profile on Debian 12
+    name: Build Bookworm package (${{ matrix.arch }})
     runs-on: ubuntu-latest
     container:
       image: debian:12-slim
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, i386]
+    env:
+      TARGET_ARCH: ${{ matrix.arch }}
+      DEB_HOST_ARCH: ${{ matrix.arch }}
 
     steps:
       - name: Install build dependencies
         run: |
+          set -eu
+          if [ "$TARGET_ARCH" = i386 ]; then dpkg --add-architecture i386; fi
           apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            build-essential \
-            cmake \
-            git \
-            pkg-config \
-            libarchive-dev \
-            libmagic-dev \
-            libssl-dev \
-            libgl1-mesa-dev \
-            libx11-dev \
-            libxrandr-dev \
-            libxcursor-dev \
-            libxi-dev \
-            libxinerama-dev \
-            ca-certificates \
-            dpkg-dev
+          if [ "$TARGET_ARCH" = i386 ]; then
+            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+              build-essential gcc-multilib g++-multilib cmake git pkg-config dpkg-dev \
+              libarchive-dev:i386 libmagic-dev:i386 libssl-dev:i386 \
+              libgl1-mesa-dev:i386 libx11-dev:i386 libxrandr-dev:i386 \
+              libxcursor-dev:i386 libxi-dev:i386 libxinerama-dev:i386 ca-certificates
+          else
+            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+              build-essential cmake git pkg-config dpkg-dev libarchive-dev libmagic-dev \
+              libssl-dev libgl1-mesa-dev libx11-dev libxrandr-dev libxcursor-dev \
+              libxi-dev libxinerama-dev ca-certificates
+          fi
           rm -rf /var/lib/apt/lists/*
 
       - name: Checkout
@@ -45,32 +50,46 @@ jobs:
 
       - name: Build static Raylib
         run: |
+          set -eu
           git clone --depth 1 --branch 5.5 https://github.com/raysan5/raylib.git /tmp/raylib
+          CMAKE_FLAGS=""
+          if [ "$TARGET_ARCH" = i386 ]; then
+            CMAKE_FLAGS="-DCMAKE_C_FLAGS=-m32 -DCMAKE_CXX_FLAGS=-m32 -DCMAKE_EXE_LINKER_FLAGS=-m32 -DCMAKE_SHARED_LINKER_FLAGS=-m32"
+          fi
           cmake -S /tmp/raylib -B /tmp/raylib/build \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INSTALL_PREFIX=/opt/raylib \
-            -DBUILD_SHARED_LIBS=OFF \
-            -DBUILD_EXAMPLES=OFF \
-            -DUSE_EXTERNAL_GLFW=OFF
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/opt/raylib \
+            -DBUILD_SHARED_LIBS=OFF -DBUILD_EXAMPLES=OFF -DUSE_EXTERNAL_GLFW=OFF \
+            $CMAKE_FLAGS
           cmake --build /tmp/raylib/build --parallel "$(nproc)"
           cmake --install /tmp/raylib/build
-          echo "PKG_CONFIG_PATH=/opt/raylib/lib/pkgconfig:/opt/raylib/lib/x86_64-linux-gnu/pkgconfig" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_PATH=/opt/raylib/lib/pkgconfig" >> "$GITHUB_ENV"
+          if [ "$TARGET_ARCH" = i386 ]; then
+            echo "PKG_CONFIG_LIBDIR=/opt/raylib/lib/pkgconfig:/usr/lib/i386-linux-gnu/pkgconfig:/usr/share/pkgconfig" >> "$GITHUB_ENV"
+          fi
 
       - name: Verify Bookworm dependencies
         run: |
-          pkg-config --modversion raylib
-          pkg-config --modversion libarchive
-          pkg-config --modversion libmagic
-          pkg-config --modversion openssl
-          if pkg-config --exists vips; then
-            echo "The lightweight CI image unexpectedly contains libvips."
-            exit 1
-          fi
+          set -eu
+          pkg-config --modversion raylib libarchive libmagic openssl
+          if pkg-config --exists vips; then echo "Unexpected libvips in Lite build"; exit 1; fi
 
       - name: Build RayMothFM (lite)
         run: |
+          set -eu
           make -C code clean
-          make -C code --jobs="$(nproc)" WITH_VIPS=0
+          if [ "$TARGET_ARCH" = i386 ]; then
+            make -C code --jobs="$(nproc)" WITH_VIPS=0 CXX="g++ -m32" \
+              CXXFLAGS="-m32 -std=c++20 -O2 -flto -Wall -Wextra -Wpedantic" \
+              LDFLAGS="-m32 -flto -s -Wl,--as-needed"
+          else
+            make -C code --jobs="$(nproc)" WITH_VIPS=0
+          fi
+          file code/raymothfm
+          if [ "$TARGET_ARCH" = i386 ]; then
+            file code/raymothfm | grep -E 'ELF 32-bit.*Intel 80386'
+          else
+            file code/raymothfm | grep -E 'ELF 64-bit'
+          fi
 
       - name: Smoke tests and runtime audit
         run: |
@@ -82,7 +101,6 @@ jobs:
           test -s "$test_home/.config/raymothfm/config"
           ldd ./code/raymothfm | tee /tmp/raymothfm-ldd.txt
           ! grep -E 'not found|libvips|libraylib\.so' /tmp/raymothfm-ldd.txt
-
 
       - name: Test DESTDIR installation
         run: |
@@ -102,11 +120,12 @@ jobs:
         run: |
           sh distro/debian/build-package.sh
           dpkg-deb --contents dist/*.deb
+          dpkg-deb -f dist/*.deb Architecture
 
       - name: Upload Debian package
         uses: actions/upload-artifact@v4
         with:
-          name: raymothfm-debian12-bookworm
+          name: raymothfm-debian12-bookworm-${{ matrix.arch }}
           path: dist/*.deb
           if-no-files-found: error
           retention-days: 14
@@ -114,7 +133,7 @@ jobs:
       - name: Upload standalone binary (optional)
         uses: actions/upload-artifact@v4
         with:
-          name: raymothfm-bookworm-lite-binary
+          name: raymothfm-bookworm-lite-${{ matrix.arch }}-binary
           path: code/raymothfm
           if-no-files-found: error
           retention-days: 7
