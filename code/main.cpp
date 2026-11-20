@@ -52,7 +52,7 @@ enum class ArchiveFormat { Tar, Pax, Ustar, Zip, SevenZip, Cpio };
 enum class ArchiveCompression { None, Gzip, Bzip2, Xz, Zstd, Lz4, Lzma, Lzip };
 
 enum class Modal { None, Rename, NewItem, Properties, DiskInfo, CreateArchive, ExtractArchive, ConvertImage, Cat, ImageView, Command, Help, About, ThemePicker, PasteOverwrite, ConfirmPermanentDelete, Checksum };
-enum class MenuAction { None, Open, Cat, ViewImage, OpenTerminal, ConvertImage, Rename, Copy, CopyPath, Cut, Paste, Delete, PermanentDelete, Compress, Extract, OpenEditor, Refresh, NewDirectory, NewFile, Checksum, Properties };
+enum class MenuAction { None, Open, Cat, ViewImage, OpenTerminal, ConvertImage, Rename, Copy, CopyPath, Cut, Paste, Delete, PermanentDelete, Compress, Extract, OpenEditor, Refresh, NewDirectory, NewFile, Checksum, Properties, AddFavorite, RemoveFavorite };
 
 struct VfsEntry {
     std::string name;
@@ -2650,12 +2650,39 @@ static int checksumSubmenuIndex(const ContextMenu& m) {
     return -1;
 }
 
+static bool isFavoritePath(const Config& config, const fs::path& path) {
+    const fs::path normalized = path.lexically_normal();
+    return std::any_of(config.favorites.begin(), config.favorites.end(),
+        [&](const std::string& item) { return fs::path(item).lexically_normal() == normalized; });
+}
+
+static void setFavorite(ExplorerState& s, const fs::path& path, bool add) {
+    if (path.empty()) return;
+    const fs::path normalized = path.lexically_normal();
+    auto it = std::find_if(s.config.favorites.begin(), s.config.favorites.end(),
+        [&](const std::string& item) { return fs::path(item).lexically_normal() == normalized; });
+    const std::string label = normalized.filename().empty() ? normalized.string() : normalized.filename().string();
+    if (add) {
+        if (it == s.config.favorites.end()) s.config.favorites.push_back(normalized.string());
+        s.status = "Added to Favorites: " + label;
+    } else {
+        if (it != s.config.favorites.end()) s.config.favorites.erase(it);
+        s.status = "Removed from Favorites: " + label;
+    }
+    s.config.favoritesConfigured = true;
+    s.flags.configDirty = true;
+}
+
 static void openContextMenu(ExplorerState& s, int row, Vector2 pos) {
     s.menu.open=true; s.menu.row=row; s.menu.pos=pos; s.menu.actions.clear();
     const bool hasItem=row>=0 && row<(int)s.rows.size();
     if (hasItem) {
         s.menu.actions.push_back(MenuAction::Open);
-        if (s.rows[row].kind==EntryKind::Directory) s.menu.actions.push_back(MenuAction::OpenTerminal);
+        if (s.rows[row].kind==EntryKind::Directory) {
+            s.menu.actions.push_back(MenuAction::OpenTerminal);
+            const fs::path directoryPath(s.rows[row].path);
+            s.menu.actions.push_back(isFavoritePath(s.config, directoryPath) ? MenuAction::RemoveFavorite : MenuAction::AddFavorite);
+        }
         if (s.rows[row].kind==EntryKind::File) {
             if (isImagePath(s.rows[row].name)) { s.menu.actions.push_back(MenuAction::ViewImage); s.menu.actions.push_back(MenuAction::ConvertImage); }
             else s.menu.actions.push_back(MenuAction::Cat);
@@ -2676,6 +2703,7 @@ static void openContextMenu(ExplorerState& s, int row, Vector2 pos) {
         if (!s.clipboard.paths.empty()) s.menu.actions.push_back(MenuAction::Paste);
         if (s.vfs && s.vfs->isLocal() && !s.path.empty()) {
             s.menu.actions.push_back(MenuAction::OpenTerminal);
+            s.menu.actions.push_back(isFavoritePath(s.config, fs::path(s.path)) ? MenuAction::RemoveFavorite : MenuAction::AddFavorite);
             s.menu.actions.push_back(MenuAction::CopyPath);
             s.menu.actions.push_back(MenuAction::Properties);
         }
@@ -2694,7 +2722,10 @@ static std::string menuLabel(MenuAction a) {
         case MenuAction::OpenEditor:return "Open in editor"; case MenuAction::Refresh:return "Refresh";
         case MenuAction::NewDirectory:return "New directory..."; case MenuAction::NewFile:return "New file...";
         case MenuAction::Checksum:return "Checksum  >";
-        case MenuAction::Properties:return "Properties"; default:return "";
+        case MenuAction::Properties:return "Properties";
+        case MenuAction::AddFavorite:return "Add to Favorites";
+        case MenuAction::RemoveFavorite:return "Remove from Favorites";
+        default:return "";
     }
 }
 
@@ -4103,6 +4134,14 @@ int main(int argc, char** argv) {
                                     case MenuAction::NewFile:openNewItem(st,false);break;
                                     case MenuAction::Properties:
                                         if(st.menu.row>=0) startProperties(st); else startCurrentDirectoryProperties(st);
+                                        break;
+                                    case MenuAction::AddFavorite:
+                                        if(st.menu.row>=0 && st.menu.row<(int)st.rows.size()) setFavorite(st,fs::path(st.rows[st.menu.row].path),true);
+                                        else setFavorite(st,fs::path(st.path),true);
+                                        break;
+                                    case MenuAction::RemoveFavorite:
+                                        if(st.menu.row>=0 && st.menu.row<(int)st.rows.size()) setFavorite(st,fs::path(st.rows[st.menu.row].path),false);
+                                        else setFavorite(st,fs::path(st.path),false);
                                         break;
                                     default:break;
                                 }
