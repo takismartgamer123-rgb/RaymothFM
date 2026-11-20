@@ -81,3 +81,22 @@ jobs:
           test -s "$test_home/.config/raymothfm/config"
           ldd ./code/raymothfm | tee /tmp/raymothfm-ldd.txt
           ! grep -E 'not found|libvips|libraylib\.so' /tmp/raymothfm-ldd.txt
+
+
+      - name: Test DESTDIR installation
+        run: |
+          set -eu
+          stage="$(pwd)/.install-stage"
+          rm -rf "$stage"
+          DESTDIR="$stage" make -C code install
+          test -x "$stage/usr/bin/raymothfm"
+          test -s "$stage/usr/share/applications/raymothfm.desktop"
+          rm -rf "$stage"
+
+      - name: Upload Bookworm Lite binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: raymothfm-bookworm-lite-x86_64
+          path: code/raymothfm
+          if-no-files-found: error
+          retention-days: 7
