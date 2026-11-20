@@ -2897,11 +2897,12 @@ static void drawModal(ExplorerState& s, int W,int H,const Theme& t) {
     DrawRectangle(0,0,W,H,Fade(BLACK,0.62f));
     const bool largeDialog=(s.modal==Modal::Help);
     const bool largeProperties=(s.modal==Modal::Properties && !s.props.multi);
-    const float dialogW = largeDialog ? 700.0f : (largeProperties ? 680.0f : 580.0f);
-    const float dialogH = largeDialog ? 560.0f : (largeProperties ? 560.0f : 440.0f);
+    const bool preferencesDialog=(s.modal==Modal::ThemePicker);
+    const float dialogW = largeDialog ? 700.0f : (largeProperties ? 680.0f : (preferencesDialog ? 700.0f : 580.0f));
+    const float dialogH = largeDialog ? 560.0f : (largeProperties ? 560.0f : (preferencesDialog ? 560.0f : 440.0f));
     Rectangle box{W*0.5f-dialogW*0.5f,H*0.5f-dialogH*0.5f,dialogW,dialogH};
     DrawRectangleRec(box,t.panel2); DrawRectangleLinesEx(box, 1, t.line);
-    const std::string title = s.modal==Modal::Properties?"Properties":s.modal==Modal::DiskInfo?"Disk usage":s.modal==Modal::Rename?"Rename":s.modal==Modal::NewItem?(s.flags.newItemDirectory?"New directory":"New file"):s.modal==Modal::CreateArchive?"Create archive":s.modal==Modal::ExtractArchive?"Extract archive":s.modal==Modal::ConvertImage?"Convert image":s.modal==Modal::Command?"Run command here":s.modal==Modal::Help?"Keyboard shortcuts":s.modal==Modal::About?"About raymothfm":s.modal==Modal::ThemePicker?"Theme picker":s.modal==Modal::PasteOverwrite?"Confirm overwrite":s.modal==Modal::ConfirmPermanentDelete?"Permanent delete":s.modal==Modal::Checksum?"Checksum":"raymothfm";
+    const std::string title = s.modal==Modal::Properties?"Properties":s.modal==Modal::DiskInfo?"Disk usage":s.modal==Modal::Rename?"Rename":s.modal==Modal::NewItem?(s.flags.newItemDirectory?"New directory":"New file"):s.modal==Modal::CreateArchive?"Create archive":s.modal==Modal::ExtractArchive?"Extract archive":s.modal==Modal::ConvertImage?"Convert image":s.modal==Modal::Command?"Run command here":s.modal==Modal::Help?"Keyboard shortcuts":s.modal==Modal::About?"About raymothfm":s.modal==Modal::ThemePicker?"Preferences":s.modal==Modal::PasteOverwrite?"Confirm overwrite":s.modal==Modal::ConfirmPermanentDelete?"Permanent delete":s.modal==Modal::Checksum?"Checksum":"raymothfm";
     DrawText(title.c_str(),(int)box.x+20,(int)box.y+18, uiFont(20), t.text);
 
 
@@ -2947,7 +2948,7 @@ static void drawModal(ExplorerState& s, int W,int H,const Theme& t) {
     }
 
     if (s.modal==Modal::ThemePicker) {
-        DrawText("Theme / Appearance",(int)box.x+20,(int)box.y+50, uiFont(15), t.accent);
+        DrawText("Appearance",(int)box.x+20,(int)box.y+50, uiFont(15), t.accent);
         auto field=[&](Rectangle rr,const char* label,TextField tf,const std::string& value){
             DrawText(label,(int)rr.x,(int)rr.y-16,uiFont(10),t.muted);
             DrawRectangleRec(rr,t.bg); DrawRectangleLinesEx(rr,1,s.focusedField==tf?t.accent:t.line);
@@ -2958,17 +2959,32 @@ static void drawModal(ExplorerState& s, int W,int H,const Theme& t) {
             }
         };
         field({box.x+20,box.y+92,150,34},"Theme number (0-11)",TextField::ThemeNumber,s.themeEdit);
-        field({box.x+20,box.y+152,270,34},"EDITOR",TextField::EditorConfig,s.editorEdit);
-        field({box.x+20,box.y+212,270,34},"TERM",TextField::TermConfig,s.termEdit);
-        field({box.x+20,box.y+272,170,34},"Font scale (1.0-2.5)",TextField::FontScale,s.fontScaleEdit);
-        field({box.x+200,box.y+272,170,34},"Accent #RRGGBB",TextField::AccentConfig,s.accentEdit);
-        Rectangle hsvBtn{box.x+380,box.y+272,62,34}; DrawRectangleRec(hsvBtn,t.panel); DrawRectangleLinesEx(hsvBtn,1,t.accent); DrawText("HSV",(int)hsvBtn.x+17,(int)hsvBtn.y+9,uiFont(11),t.text);
-        DrawText("Themes",(int)box.x+330,(int)box.y+76,uiFont(12),t.muted);
-        int yy=(int)box.y+100; for(int i=0;i<(int)kThemes.size();++i){ Color c=(i==s.config.theme)?t.accent:t.text; DrawText((std::to_string(i)+"  "+kThemes[i].name).c_str(),(int)box.x+330,yy,uiFont(10),c); yy+=17; }
-        Rectangle apply{box.x+390,box.y+360,85,32},cancel{box.x+485,box.y+360,65,32};
+        field({box.x+20,box.y+152,300,34},"EDITOR",TextField::EditorConfig,s.editorEdit);
+        field({box.x+20,box.y+212,300,34},"Terminal command",TextField::TermConfig,s.termEdit);
+        field({box.x+20,box.y+272,150,34},"Font scale (1.0-2.5)",TextField::FontScale,s.fontScaleEdit);
+        field({box.x+190,box.y+272,170,34},"Accent #RRGGBB",TextField::AccentConfig,s.accentEdit);
+        Rectangle hsvBtn{box.x+370,box.y+272,62,34}; DrawRectangleRec(hsvBtn,t.panel); DrawRectangleLinesEx(hsvBtn,1,t.accent); DrawText("HSV",(int)hsvBtn.x+17,(int)hsvBtn.y+9,uiFont(11),t.text);
+
+        DrawText("File manager options",(int)box.x+20,(int)box.y+326,uiFont(13),t.accent);
+        drawCheckbox({box.x+20,box.y+348,16,16},s.config.showHidden,"Show hidden files",t.text,t.accent);
+        drawCheckbox({box.x+20,box.y+376,16,16},s.config.showThumbnails,"Generate thumbnails",t.text,t.accent);
+        Rectangle thumbnailSize{box.x+20,box.y+402,270,28};
+        DrawRectangleRec(thumbnailSize,t.panel); DrawRectangleLinesEx(thumbnailSize,1,t.line);
+        DrawText(("Thumbnail size: "+std::to_string(configuredThumbnailSize(s.config))+" px  (click to cycle)").c_str(),(int)thumbnailSize.x+8,(int)thumbnailSize.y+8,uiFont(12),t.text);
+        drawCheckbox({box.x+20,box.y+442,16,16},s.config.cursorBeam,"Cursor beam effect",t.text,t.accent);
+        DrawText("Gamma Linux default terminal: gamma-terminal",(int)box.x+20,(int)box.y+474,uiFont(10),t.muted);
+
+        DrawText("Themes",(int)box.x+400,(int)box.y+76,uiFont(12),t.muted);
+        int yy=(int)box.y+100;
+        for(int i=0;i<(int)kThemes.size();++i){
+            Color c=(i==s.config.theme)?t.accent:t.text;
+            DrawText((std::to_string(i)+"  "+kThemes[i].name).c_str(),(int)box.x+400,yy,uiFont(11),c);
+            yy+=22;
+        }
+        Rectangle apply{box.x+500,box.y+510,85,32},cancel{box.x+595,box.y+510,65,32};
         DrawRectangleRec(apply,t.panel); DrawRectangleLinesEx(apply,1,t.accent); DrawText("Apply",(int)apply.x+20,(int)apply.y+9,uiFont(13),t.text);
         DrawRectangleRec(cancel,t.panel); DrawRectangleLinesEx(cancel,1,t.line); DrawText("Cancel",(int)cancel.x+10,(int)cancel.y+9,uiFont(13),t.text);
-        DrawText("Enter = apply    Esc = cancel    HSV = random accent",(int)box.x+20,(int)box.y+360,uiFont(10),t.muted);
+        DrawText("Checkbox changes apply immediately; Apply saves text fields.",(int)box.x+20,(int)box.y+520,uiFont(10),t.muted);
         return;
     }
 
@@ -4178,21 +4194,26 @@ int main(int argc, char** argv) {
         }
 
         if(st.modal==Modal::ThemePicker && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-            Rectangle box{W*0.5f-290,H*0.5f-220,580,440};
-            Rectangle themeF{box.x+20,box.y+92,150,34}, editorF{box.x+20,box.y+152,270,34}, termF{box.x+20,box.y+212,270,34}, fontF{box.x+20,box.y+272,170,34}, accentF{box.x+200,box.y+272,170,34}, hsvBtn{box.x+380,box.y+272,62,34};
-            Rectangle apply{box.x+390,box.y+360,85,32}, cancel{box.x+485,box.y+360,65,32};
+            Rectangle box{W*0.5f-350,H*0.5f-280,700,560};
+            Rectangle themeF{box.x+20,box.y+92,150,34}, editorF{box.x+20,box.y+152,300,34}, termF{box.x+20,box.y+212,300,34}, fontF{box.x+20,box.y+272,150,34}, accentF{box.x+190,box.y+272,170,34}, hsvBtn{box.x+370,box.y+272,62,34};
+            Rectangle showHiddenHit{box.x+18,box.y+346,260,22}, thumbnailsHit{box.x+18,box.y+374,260,22}, thumbnailSizeHit{box.x+20,box.y+402,270,28}, cursorBeamHit{box.x+18,box.y+440,260,22};
+            Rectangle apply{box.x+500,box.y+510,85,32}, cancel{box.x+595,box.y+510,65,32};
             if(pointIn(themeF,mouse)) focusAt(st,TextField::ThemeNumber,mouse.x,themeF.x+8,13);
             else if(pointIn(editorF,mouse)) focusAt(st,TextField::EditorConfig,mouse.x,editorF.x+8,13);
             else if(pointIn(termF,mouse)) focusAt(st,TextField::TermConfig,mouse.x,termF.x+8,13);
             else if(pointIn(fontF,mouse)) focusAt(st,TextField::FontScale,mouse.x,fontF.x+8,13);
             else if(pointIn(accentF,mouse)) focusAt(st,TextField::AccentConfig,mouse.x,accentF.x+8,13);
             else if(pointIn(hsvBtn,mouse)){ st.config.accent=ColorFromHSV(std::fmod((float)(GetTime()*53.0),360.0f),0.72f,0.96f); st.config.accentCustom=true; st.accentEdit=hexRGB(st.config.accent); st.flags.configDirty=true; }
+            else if(pointIn(showHiddenHit,mouse)) { st.config.showHidden=!st.config.showHidden; refresh(st); st.flags.configDirty=true; }
+            else if(pointIn(thumbnailsHit,mouse)) { st.config.showThumbnails=!st.config.showThumbnails; st.flags.configDirty=true; }
+            else if(pointIn(thumbnailSizeHit,mouse)) { st.config.thumbnailRes=(st.config.thumbnailRes%5)+1; st.flags.configDirty=true; }
+            else if(pointIn(cursorBeamHit,mouse)) { st.config.cursorBeam=!st.config.cursorBeam; st.flags.cursorBeam=st.config.cursorBeam; if(st.flags.cursorBeam) HideCursor(); else ShowCursor(); st.flags.configDirty=true; }
             else if(pointIn(apply,mouse)) {
                 int n=std::atoi(st.themeEdit.c_str()); if(n>=0&&n<(int)kThemes.size()) { st.config.theme=n; applySystemTheme(st.config.systemTheme); }
                 st.config.editor=st.editorEdit; st.config.term=st.termEdit; st.config.fontScale=std::clamp(std::strtof(st.fontScaleEdit.c_str(),nullptr),1.0f,2.5f); gUIFontScale=st.config.fontScale;
                 st.config.accent=accentFromHSVField(st.accentEdit, st.config.accent); st.config.accentCustom=true; st.flags.configDirty=true; st.modal=Modal::None; unfocus(st);
             } else if(pointIn(cancel,mouse)){ st.modal=Modal::None; unfocus(st); }
-            else { int yy=(int)box.y+100; for(int i=0;i<(int)kThemes.size();++i){ Rectangle r{box.x+330,(float)yy-3,230,18}; if(pointIn(r,mouse)){ st.themeEdit=std::to_string(i); st.config.theme=i; applySystemTheme(st.config.systemTheme); if(!st.config.accentCustom) st.config.accent=kThemes[i].accent; st.flags.configDirty=true; } yy+=17; } }
+            else { int yy=(int)box.y+100; for(int i=0;i<(int)kThemes.size();++i){ Rectangle r{box.x+400,(float)yy-4,280,20}; if(pointIn(r,mouse)){ st.themeEdit=std::to_string(i); st.config.theme=i; applySystemTheme(st.config.systemTheme); if(!st.config.accentCustom) st.config.accent=kThemes[i].accent; st.flags.configDirty=true; } yy+=22; } }
         }
         if(st.modal==Modal::DiskInfo && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)){
             Rectangle box{W*0.5f-290,H*0.5f-220,580,440}; const int n=(int)st.diskInfo.mounts.size();
