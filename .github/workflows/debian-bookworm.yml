@@ -36,7 +36,8 @@ jobs:
             libxcursor-dev \
             libxi-dev \
             libxinerama-dev \
-            ca-certificates \\\n            dpkg-dev
+            ca-certificates \
+            dpkg-dev
           rm -rf /var/lib/apt/lists/*
 
       - name: Checkout
