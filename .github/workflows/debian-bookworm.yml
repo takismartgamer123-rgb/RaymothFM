@@ -47,11 +47,12 @@ jobs:
           git clone --depth 1 --branch 5.5 https://github.com/raysan5/raylib.git /tmp/raylib
           cmake -S /tmp/raylib -B /tmp/raylib/build \
             -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/opt/raylib \
             -DBUILD_SHARED_LIBS=OFF \
             -DBUILD_EXAMPLES=OFF \
             -DUSE_EXTERNAL_GLFW=OFF
           cmake --build /tmp/raylib/build --parallel "$(nproc)"
-          cmake --install /tmp/raylib/build --prefix /opt/raylib
+          cmake --install /tmp/raylib/build
           echo "PKG_CONFIG_PATH=/opt/raylib/lib/pkgconfig:/opt/raylib/lib/x86_64-linux-gnu/pkgconfig" >> "$GITHUB_ENV"
 
       - name: Verify Bookworm dependencies
