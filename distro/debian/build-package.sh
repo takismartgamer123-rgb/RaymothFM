@@ -42,7 +42,7 @@ Description: Lightweight graphical file manager
  RayMothFM is a native graphical file manager.
 EOF
 
-SHLIBS_OUTPUT="$(cd "$WORK_DIR" && dpkg-shlibdeps -a"$ARCH" -O -e"$PKG/usr/bin/raymothfm")"
+SHLIBS_OUTPUT="$(cd "$WORK_DIR" && DEB_HOST_ARCH="$ARCH" dpkg-shlibdeps -O -e"$PKG/usr/bin/raymothfm")"
 DEPENDS="$(printf '%s\n' "$SHLIBS_OUTPUT" | sed -n 's/^shlibs:Depends=//p' | head -n 1)"
 if [ -z "$DEPENDS" ]; then
     echo "dpkg-shlibdeps did not return runtime dependencies:" >&2
