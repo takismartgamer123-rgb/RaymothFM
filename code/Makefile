@@ -11,7 +11,7 @@ CPPFLAGS += -DRAYMOTHFM_WITH_VIPS=1
 endif
 
 PKG_CFLAGS := $(shell pkg-config --cflags $(PKGS) 2>/dev/null)
-PKG_LIBS := $(shell pkg-config --libs $(PKGS) 2>/dev/null)
+PKG_LIBS := $(shell pkg-config --static --libs $(PKGS) 2>/dev/null)
 CPPFLAGS += $(PKG_CFLAGS) -DRAYMOTHFM_VERSION=\"$(VERSION)\"
 CXXFLAGS := -std=c++20 -O2 -flto -Wall -Wextra -Wpedantic
 LDFLAGS := -flto -s -Wl,--as-needed
