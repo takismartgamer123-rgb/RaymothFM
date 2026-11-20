@@ -2489,6 +2489,30 @@ static bool spawnDetachedShellInDir(const fs::path& dir, const std::string& comm
     return true;
 }
 
+static std::string firstCommandToken(const std::string& command) {
+    std::istringstream input(command);
+    std::string executable;
+    input >> executable;
+    return executable;
+}
+
+static bool executableAvailable(const std::string& command) {
+    const std::string executable = firstCommandToken(command);
+    if (executable.empty()) return false;
+    if (executable.find('/') != std::string::npos) return ::access(executable.c_str(), X_OK) == 0;
+
+    const char* pathEnv = std::getenv("PATH");
+    if (!pathEnv) return false;
+    std::istringstream paths(pathEnv);
+    std::string directory;
+    while (std::getline(paths, directory, ':')) {
+        if (directory.empty()) directory = ".";
+        const fs::path candidate = fs::path(directory) / executable;
+        if (::access(candidate.c_str(), X_OK) == 0) return true;
+    }
+    return false;
+}
+
 static std::string editorLaunchCommand(const std::string& configured, const fs::path& file) {
     std::istringstream in(configured);
     std::string first;
@@ -2510,8 +2534,13 @@ static std::string editorLaunchCommand(const std::string& configured, const fs::
 static void openTerminalInDirectory(ExplorerState& s, const fs::path& p) {
     if(!s.vfs || !s.vfs->isLocal()) { s.status="Terminal requires a local directory"; return; }
     std::error_code ec; if(!fs::is_directory(p,ec)) { s.status="Select a directory"; return; }
-    if(s.config.term.empty()) { s.status="Set TERM in ~/.config/raymothfm/config"; return; }
+    if(s.config.term.empty()) { s.status="Set terminal command in Preferences"; return; }
+    if (!executableAvailable(s.config.term)) {
+        s.status = "Terminal command not found: " + firstCommandToken(s.config.term);
+        return;
+    }
     if(spawnDetachedShellInDir(p,s.config.term)) s.status="Opened terminal in: "+p.string();
+    else s.status="Could not start terminal: "+firstCommandToken(s.config.term);
 }
 
 static void openInTerminal(ExplorerState& s) {
@@ -4034,7 +4063,8 @@ int main(int argc, char** argv) {
                                 switch(a){
                                     case MenuAction::Open:openSelected(st);break;
                                     case MenuAction::OpenTerminal:
-                                        if(st.menu.row>=0) openInTerminal(st); else openCurrentDirectoryInTerminal(st);
+                                        if(st.menu.row>=0 && st.menu.row<(int)st.rows.size()) openTerminalInDirectory(st,fs::path(st.rows[st.menu.row].path));
+                                        else openCurrentDirectoryInTerminal(st);
                                         break;
                                     case MenuAction::ConvertImage:openConvertImage(st);break;
                                     case MenuAction::Cat:openCat(st);break;
