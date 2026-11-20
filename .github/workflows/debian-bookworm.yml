@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - gamma-bookworm-lite
+      - gamma-legacy-polish
   pull_request:
   workflow_dispatch:
 
