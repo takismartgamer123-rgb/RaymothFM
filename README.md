@@ -21,6 +21,8 @@ Next-Gen linux file manager Speed focused ⚡
 - Tab auto completion
 - 1 Bit icons pack
 - Themes
+- Lightweight Preferences panel for themes, terminal/editor commands, hidden files, thumbnails, and cursor effect
+- Favorites can be added or removed from the context menu
 - Configurable
 - hotkeys/look similar to windows file explorer
 - No bloatware to slow start up open in no time.
@@ -77,7 +79,7 @@ For Debian 12 Bookworm, see [the Debian build notes](distro/debian/README.md).
 |key|action|
 |------|------|
 |`F1`|Open keyboard shortcuts dialog|
-|`F3`|Open theme / appearance dialog|
+|`F3`|Open Preferences|
 |`F4`|Open About dialog|
 |`F5`|Refresh current directory|
 |`F6`|Open `cat` / text or image viewer for the selected item|
