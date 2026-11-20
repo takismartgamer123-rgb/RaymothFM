@@ -100,6 +100,9 @@ jobs:
           test_home="$(mktemp -d)"
           HOME="$test_home" ./code/raymothfm --mkcfg
           test -s "$test_home/.config/raymothfm/config"
+          grep -Fq 'TERM="gamma-terminal"' "$test_home/.config/raymothfm/config"
+          grep -Fq 'terminal_migration_done=1' "$test_home/.config/raymothfm/config"
+          grep -Fq 'favorites_configured=0' "$test_home/.config/raymothfm/config"
           ldd ./code/raymothfm | tee /tmp/raymothfm-ldd.txt
           ! grep -E 'not found|libvips|libraylib\.so' /tmp/raymothfm-ldd.txt
 
