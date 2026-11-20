@@ -62,7 +62,20 @@ mkcfg: $(TARGET)
 strip: $(TARGET)
 	strip -s $(TARGET)
 
+PREFIX ?= /usr
+BINDIR ?= $(PREFIX)/bin
+DATADIR ?= $(PREFIX)/share
+DESKTOP_FILE := ../distro/debian/raymothfm.desktop
+
+install: $(TARGET)
+	install -Dm755 $(TARGET) $(DESTDIR)$(BINDIR)/raymothfm
+	install -Dm644 $(DESKTOP_FILE) $(DESTDIR)$(DATADIR)/applications/raymothfm.desktop
+
+uninstall:
+	rm -f $(DESTDIR)$(BINDIR)/raymothfm
+	rm -f $(DESTDIR)$(DATADIR)/applications/raymothfm.desktop
+
 clean:
 	rm -f $(TARGET) $(DEBUG_TARGET) $(OBJECTS) $(DEBUG_OBJECTS)
 
-.PHONY: all check-deps debug run run-debug version mkcfg strip clean
+.PHONY: all check-deps debug run run-debug version mkcfg strip install uninstall clean
