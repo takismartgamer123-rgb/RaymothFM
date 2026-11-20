@@ -33,13 +33,13 @@ jobs:
           apt-get update
           if [ "$TARGET_ARCH" = i386 ]; then
             DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-              build-essential gcc-multilib g++-multilib cmake git pkg-config dpkg-dev \
+              build-essential gcc-multilib g++-multilib cmake git pkg-config dpkg-dev file \
               libarchive-dev:i386 libmagic-dev:i386 libssl-dev:i386 \
               libgl1-mesa-dev:i386 libx11-dev:i386 libxrandr-dev:i386 \
               libxcursor-dev:i386 libxi-dev:i386 libxinerama-dev:i386 ca-certificates
           else
             DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-              build-essential cmake git pkg-config dpkg-dev libarchive-dev libmagic-dev \
+              build-essential cmake git pkg-config dpkg-dev file libarchive-dev libmagic-dev \
               libssl-dev libgl1-mesa-dev libx11-dev libxrandr-dev libxcursor-dev \
               libxi-dev libxinerama-dev ca-certificates
           fi
