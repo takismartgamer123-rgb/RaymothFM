@@ -15,6 +15,12 @@ Next-Gen linux file manager Speed focused ⚡
 - Linux Kernel **VFS** 🐧
 - Libmagic it reads file headers to identify file types
 - Multi-tabs
+- Startup keyboard guide and GUI settings
+- Purple default theme; Leafpad editor and Gamma Terminal integration
+- Cancellable background copy queue with progress
+- Safe file-conflict choices: replace, skip, or keep both
+- Recent files and folder bookmarks
+- Quick preview for text and image files
 - Wildcard search
 - Disk usage meter
 - **Raylib UI** ✨
@@ -46,6 +52,12 @@ External archive helpers such as 7z, zstd, and xz are optional and are only
 needed for the formats or operations that invoke them. CRC32 checksum support
 is built in and does not require a direct zlib development dependency.
 
+### Default applications
+
+The default text editor is `leafpad`; the default terminal is `gamma-terminal`.
+The terminal is launched with its working directory set to the folder currently
+open in RayMothFM. Both commands can be changed in Settings.
+
 ### Build
 
 ```sh
@@ -76,13 +88,17 @@ make -j$(nproc)
 |key|action|
 |------|------|
 |`F1`|Open keyboard shortcuts dialog|
-|`F3`|Open theme / appearance dialog|
+|`F1`|Open keyboard shortcuts dialog (also shown at startup by default)|
+|`F3` / `Ctrl+,`|Open Settings|
 |`F4`|Open About dialog|
 |`F5`|Refresh current directory|
 |`F6`|Open `cat` / text or image viewer for the selected item|
 |`F7`|New directory|
 |`F8`|Copy current opened directory path to clipboard|
-|`F9`|Open terminal in the current directory|
+|`F9`|Open Gamma Terminal in the current directory|
+|`Space`|Quick preview for selected text or image files|
+|`Ctrl+D`|Bookmark current directory|
+|`Ctrl+Shift+D`|Remove current directory bookmark|
 |`Ctrl+Q`|Quit RaymothFM|
 |`Ctrl+F`|Focus search box|
 |`Ctrl+L`|Focus address/path bar and select its text|
@@ -99,7 +115,7 @@ make -j$(nproc)
 |`Ctrl+A`|Select all files in the main view; select all text when a textbox is focused|
 |`Ctrl+C`|Copy selection / copy selected text in a textbox|
 |`Ctrl+X`|Cut selection / cut selected text in a textbox|
-|`Ctrl+V`|Paste files / paste clipboard text in a textbox|
+|`Ctrl+V`|Paste files / paste clipboard text in a textbox; paste batches show progress and can be cancelled with `Esc`|
 |`Ctrl+Backspace`|Erase textbox text back to the previous `/` in path/command fields|
 |`Alt+Left`|Back in directory history|
 |`Alt+Right`|Forward in directory history|
