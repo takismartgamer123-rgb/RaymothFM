@@ -126,8 +126,9 @@ jobs:
            RayMothFM is a fast, keyboard-driven Linux file manager built with Raylib.
           SOURCE_CONTROL
 
-          depends="$(dpkg-shlibdeps -O -praymothfm -e"${package_root}/usr/bin/raymothfm" \
-            | sed -n 's/^shlibs:Depends=//p' | head -n 1)"
+          shlib_output="$(dpkg-shlibdeps -O -e"${package_root}/usr/bin/raymothfm")"
+          printf '%s\n' "${shlib_output}"
+          depends="$(printf '%s\n' "${shlib_output}" | sed -n 's/^shlibs:Depends=//p' | head -n 1)"
           rm -rf debian
 
           if [[ -z "${depends}" ]]; then
