@@ -154,7 +154,7 @@ jobs:
             fi
             runtime_packages+=("${owner}")
           done
-          depends="$(printf '%s\n' "${runtime_packages[@]}" | sort -u | paste -sd ', ' -)"
+          depends="$(printf '%s\n' "${runtime_packages[@]}" | sort -u | paste -sd ',' -)"
           if [[ -z "${depends}" ]]; then
             echo "No runtime dependencies were detected" >&2
             exit 1
