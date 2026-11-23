@@ -127,18 +127,29 @@ jobs:
             exit 1
           fi
 
-          mapfile -t runtime_libraries < <(
-            ldd "${binary}" | awk '/=> \// { print $3 } /^\// { print $1 }' | sort -u
+          mapfile -t needed_sonames < <(
+            readelf -d "${binary}" | awk -F'[][]' '/Shared library: / { print $2 }' | sort -u
           )
+          if [[ "${#needed_sonames[@]}" -eq 0 ]]; then
+            echo "No direct shared-library dependencies found in the binary" >&2
+            exit 1
+          fi
+
           runtime_packages=()
-          for library in "${runtime_libraries[@]}"; do
-            resolved_library="$(readlink -f "${library}")"
-            owner="$(dpkg-query -S "${library}" 2>/dev/null | head -n 1 | cut -d: -f1 || true)"
+          for soname in "${needed_sonames[@]}"; do
+            library_path="$(ldconfig -p | awk -v soname="${soname}" '$1 == soname { print $NF; exit }')"
+            if [[ -z "${library_path}" ]]; then
+              echo "Could not resolve direct runtime library: ${soname}" >&2
+              exit 1
+            fi
+
+            owner="$(dpkg-query -S "${library_path}" 2>/dev/null | head -n 1 | cut -d: -f1 || true)"
             if [[ -z "${owner}" ]]; then
+              resolved_library="$(readlink -f "${library_path}")"
               owner="$(dpkg-query -S "${resolved_library}" 2>/dev/null | head -n 1 | cut -d: -f1 || true)"
             fi
             if [[ -z "${owner}" ]]; then
-              echo "Could not map runtime library to a Debian package: ${resolved_library}" >&2
+              echo "Could not map ${soname} (${library_path}) to a Debian package" >&2
               exit 1
             fi
             runtime_packages+=("${owner}")
