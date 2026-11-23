@@ -57,7 +57,15 @@ jobs:
           echo "Target architecture: ${actual_arch}"
           test "${actual_arch}" = "${BUILD_ARCH}"
 
-          apt-get update
+          # Bullseye reached Debian LTS end-of-life on 2026-08-31.
+          # Its final security snapshot is pinned so the build remains reproducible.
+          cat > /etc/apt/sources.list <<'SOURCES'
+          deb http://archive.debian.org/debian bullseye main
+          deb http://archive.debian.org/debian bullseye-updates main
+          deb [check-valid-until=no] https://snapshot.debian.org/archive/debian-security/20260903T220410Z bullseye-security main
+          SOURCES
+
+          apt-get -o Acquire::Retries=3 update
           apt-get install -y --no-install-recommends \
             build-essential \
             cmake \
@@ -78,10 +86,7 @@ jobs:
             libxxf86vm-dev \
             libxrender-dev \
             ca-certificates \
-            file \
-            xz-utils \
-            zstd \
-            p7zip-full
+            file
 
           # Build Raylib for this exact target architecture and link it statically.
           git clone --depth 1 --branch 5.5 \
