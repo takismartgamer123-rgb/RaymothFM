@@ -3646,6 +3646,20 @@ int main(int argc, char** argv) {
             if (isCtrlDown() && IsKeyPressed(KEY_W)) closeActiveTab(st);
             if (isCtrlDown() && IsKeyPressed(KEY_TAB)) activateTab(st,isShiftDown()?st.activeTab-1:st.activeTab+1);
             if (isCtrlDown() && IsKeyPressed(KEY_H)) { st.config.showHidden=!st.config.showHidden; refresh(st); st.flags.configDirty=true; st.status=st.config.showHidden?"Hidden files shown":"Hidden files hidden"; }
+            if (isCtrlDown() && IsKeyPressed(KEY_D) && st.focusedField==TextField::None && st.vfs && st.vfs->isLocal()) {
+                const auto bookmark=std::find(st.config.favorites.begin(),st.config.favorites.end(),st.path);
+                if (isShiftDown()) {
+                    if (bookmark!=st.config.favorites.end()) {
+                        st.config.favorites.erase(bookmark);
+                        st.status="Bookmark removed";
+                        st.flags.configDirty=true;
+                    } else st.status="This folder is not bookmarked";
+                } else if (bookmark==st.config.favorites.end()) {
+                    st.config.favorites.push_back(st.path);
+                    st.status="Bookmarked: "+fs::path(st.path).filename().string();
+                    st.flags.configDirty=true;
+                } else st.status="Folder is already bookmarked";
+            }
             for (int k=0;k<9;++k) if (isCtrlDown() && IsKeyPressed(KEY_ONE+k) && k<(int)st.tabs.size()) activateTab(st,k);
             if (IsKeyPressed(KEY_F5) || (isCtrlDown() && IsKeyPressed(KEY_R))) refresh(st);
             if (IsKeyPressed(KEY_F8) && st.focusedField==TextField::None) {
@@ -3694,6 +3708,13 @@ int main(int argc, char** argv) {
             if (isCtrlDown() && IsKeyPressed(KEY_A) && st.focusedField==TextField::None) selectAll(st);
             if (IsKeyPressed(KEY_F2) && st.focusedField==TextField::None) startRename(st);
             if (IsKeyPressed(KEY_F6) && st.focusedField==TextField::None) openCat(st);
+            if (IsKeyPressed(KEY_SPACE) && st.focusedField==TextField::None) {
+                const auto ids=selectedRows(st);
+                if (ids.size()==1 && st.rows[ids.front()].kind!=EntryKind::Directory) {
+                    if (isImagePath(st.rows[ids.front()].name)) openImageViewer(st);
+                    else openCat(st);
+                }
+            }
             if (isCtrlDown() && isShiftDown() && IsKeyPressed(KEY_A) && st.focusedField==TextField::None) openCreateArchive(st);
             if (isCtrlDown() && isShiftDown() && IsKeyPressed(KEY_N) && st.focusedField==TextField::None) openNewItem(st, true);
             if (isCtrlDown() && isAltDown() && IsKeyPressed(KEY_N) && st.focusedField==TextField::None) openNewItem(st, false);
