@@ -133,7 +133,10 @@ jobs:
           runtime_packages=()
           for library in "${runtime_libraries[@]}"; do
             resolved_library="$(readlink -f "${library}")"
-            owner="$(dpkg-query -S "${resolved_library}" 2>/dev/null | head -n 1 | cut -d: -f1 || true)"
+            owner="$(dpkg-query -S "${library}" 2>/dev/null | head -n 1 | cut -d: -f1 || true)"
+            if [[ -z "${owner}" ]]; then
+              owner="$(dpkg-query -S "${resolved_library}" 2>/dev/null | head -n 1 | cut -d: -f1 || true)"
+            fi
             if [[ -z "${owner}" ]]; then
               echo "Could not map runtime library to a Debian package: ${resolved_library}" >&2
               exit 1
