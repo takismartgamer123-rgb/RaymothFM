@@ -1,0 +1,155 @@
+name: Build RayMothFM Debian package
+
+on:
+  push:
+    branches:
+      - feature/gamma-workflow-settings-shortcuts
+  pull_request:
+    branches:
+      - upstream-lightweight-profile
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: raymothfm-deb-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-deb:
+    name: Build .deb (amd64)
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            git \
+            pkg-config \
+            dpkg-dev \
+            libarchive-dev \
+            libmagic-dev \
+            libssl-dev \
+            libgl1-mesa-dev \
+            libx11-dev \
+            libxrandr-dev \
+            libxi-dev \
+            libxcursor-dev \
+            libxinerama-dev
+
+      - name: Build static Raylib
+        env:
+          RAYLIB_VERSION: 5.5
+        run: |
+          git clone --depth 1 --branch "${RAYLIB_VERSION}" \
+            https://github.com/raysan5/raylib.git "${RUNNER_TEMP}/raylib"
+
+          cmake -S "${RUNNER_TEMP}/raylib" -B "${RUNNER_TEMP}/raylib-build" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/usr/local \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DBUILD_EXAMPLES=OFF \
+            -DUSE_EXTERNAL_GLFW=OFF \
+            -DGLFW_BUILD_X11=ON \
+            -DGLFW_BUILD_WAYLAND=OFF
+
+          cmake --build "${RUNNER_TEMP}/raylib-build" --parallel "$(nproc)"
+          sudo cmake --install "${RUNNER_TEMP}/raylib-build"
+
+          echo "PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:${PKG_CONFIG_PATH:-}" >> "${GITHUB_ENV}"
+          pkg-config --exists raylib
+          test -f /usr/local/lib/libraylib.a
+
+      - name: Compile RayMothFM
+        run: |
+          make -C code clean
+          make -C code -j"$(nproc)"
+          test -x code/raymothfm
+          file code/raymothfm
+
+      - name: Assemble Debian package
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="$(tr -d '[:space:]' < code/VERSION)"
+          if [[ -z "${version}" ]]; then
+            echo "code/VERSION is empty" >&2
+            exit 1
+          fi
+          dpkg --validate-version "${version}"
+
+          package_root="$(mktemp -d)"
+          mkdir -p "${package_root}/DEBIAN" \
+                   "${package_root}/usr/bin" \
+                   "${package_root}/usr/share/applications" \
+                   "${package_root}/usr/share/doc/raymothfm" \
+                   dist
+
+          install -m 0755 code/raymothfm "${package_root}/usr/bin/raymothfm"
+          install -m 0644 README.md "${package_root}/usr/share/doc/raymothfm/README.md"
+
+          cat > "${package_root}/usr/share/applications/raymothfm.desktop" <<'DESKTOP'
+          [Desktop Entry]
+          Type=Application
+          Name=RayMothFM
+          GenericName=File Manager
+          Comment=Lightweight graphical file manager
+          Exec=raymothfm %U
+          Icon=system-file-manager
+          Terminal=false
+          Categories=System;FileTools;FileManager;
+          MimeType=inode/directory;
+          DESKTOP
+
+          depends="$(dpkg-shlibdeps -O -praymothfm -e"${package_root}/usr/bin/raymothfm" \
+            | sed -n 's/^shlibs:Depends=//p' | head -n 1)"
+          if [[ -z "${depends}" ]]; then
+            echo "Could not determine shared-library dependencies" >&2
+            exit 1
+          fi
+
+          cat > "${package_root}/DEBIAN/control" <<CONTROL
+          Package: raymothfm
+          Version: ${version}
+          Section: utils
+          Priority: optional
+          Architecture: amd64
+          Maintainer: RayMothFM contributors <takismartgamer123-rgb@users.noreply.github.com>
+          Depends: ${depends}
+          Homepage: https://github.com/takismartgamer123-rgb/RaymothFM
+          Description: Lightweight graphical file manager
+           RayMothFM is a fast, keyboard-driven Linux file manager built with Raylib.
+          CONTROL
+
+          chmod 0755 "${package_root}/DEBIAN"
+          chmod 0644 "${package_root}/DEBIAN/control"
+
+          ldd "${package_root}/usr/bin/raymothfm" | tee dist/ldd.txt
+          if grep -q "not found" dist/ldd.txt; then
+            echo "The built executable has unresolved shared libraries" >&2
+            exit 1
+          fi
+
+          deb="dist/raymothfm_${version}_amd64.deb"
+          dpkg-deb --root-owner-group --build "${package_root}" "${deb}"
+          dpkg-deb --info "${deb}"
+          sha256sum "${deb}" > "${deb}.sha256"
+
+      - name: Upload Debian package
+        uses: actions/upload-artifact@v4
+        with:
+          name: raymothfm-deb-amd64
+          path: |
+            dist/*.deb
+            dist/*.deb.sha256
+            dist/ldd.txt
+          if-no-files-found: error
+          retention-days: 14
