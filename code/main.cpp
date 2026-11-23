@@ -2186,150 +2186,240 @@ static void doCopyOrCut(ExplorerState& s, bool cut) {
     s.status = cut ? "Cut " + std::to_string(s.clipboard.paths.size()) + " item(s)" : "Copied " + std::to_string(s.clipboard.paths.size()) + " item(s)";
 }
 
-static bool finishPasteOne(ExplorerState& s, const fs::path& src, const fs::path& dst, bool cut, bool overwrite) {
-    if (src == dst) { s.status = "Source and destination are the same"; return true; }
-    std::error_code ec;
-    const bool destinationExists = fs::exists(dst, ec) || fs::is_symlink(fs::symlink_status(dst, ec));
-    if (ec) { s.status = "Paste failed: " + ec.message(); return false; }
-    if (destinationExists && !overwrite) { s.status = "Destination already exists"; return false; }
+static bool finishPasteOne(const fs::path& src, const fs::path& dst, bool cut, bool overwrite,
+                            FileOperationQueue& operation, std::string& message) {
+    if (src == dst) { message = "Source and destination are the same"; return true; }
+    if (operation.cancelRequested.load()) { message = "Cancelled"; return false; }
 
-    static uint64_t sequence = 0;
+    std::error_code ec;
+    const fs::file_status destinationStatus = fs::symlink_status(dst,ec);
+    bool destinationExists = false;
+    if (ec == std::errc::no_such_file_or_directory) ec.clear();
+    else if (ec) { message = "Paste failed: " + ec.message(); return false; }
+    else destinationExists = fs::exists(destinationStatus) || fs::is_symlink(destinationStatus);
+    if (destinationExists && !overwrite) { message = "Destination already exists"; return false; }
+
+    static std::atomic<uint64_t> sequence{0};
     fs::path staged, backup;
     for (int attempt=0; attempt<16; ++attempt) {
-        const std::string suffix = ".raymothfm-" + std::to_string((long long)getpid()) + "-" + std::to_string(++sequence);
+        const std::string suffix = ".raymothfm-" + std::to_string((long long)getpid()) + "-" +
+                                   std::to_string(++sequence) + "-" + std::to_string(attempt);
         staged = dst; staged += suffix + ".tmp";
         backup = dst; backup += suffix + ".bak";
         std::error_code check;
-        if (!fs::exists(staged,check) && !fs::exists(backup,check) && !check) break;
+        const bool stageExists = fs::exists(staged,check);
+        if (check) continue;
+        const bool backupExists = fs::exists(backup,check);
+        if (!check && !stageExists && !backupExists) break;
         staged.clear(); backup.clear();
     }
-    if (staged.empty() || backup.empty()) { s.status = "Paste failed: cannot allocate a staging name"; return false; }
+    if (staged.empty() || backup.empty()) { message = "Paste failed: cannot allocate a staging name"; return false; }
 
     std::string error;
-    if (!copyRecursive(src, staged, error)) {
-        std::string ignored; (void)removeRecursive(staged, ignored);
-        s.status = "Paste failed while preparing replacement: " + error;
+    operation.total.store(countCopyEntries(src,&operation));
+    if (operation.total.load()==0) operation.total.store(1);
+    if (!copyRecursive(src,staged,error,&operation)) {
+        std::string ignored; (void)removeRecursive(staged,ignored);
+        message = error=="Cancelled" ? "Paste cancelled" : "Paste failed while preparing replacement: " + error;
+        return false;
+    }
+    if (operation.cancelRequested.load()) {
+        std::string ignored; (void)removeRecursive(staged,ignored);
+        message = "Paste cancelled";
         return false;
     }
 
     bool backedUp = false;
     if (destinationExists) {
-        fs::rename(dst, backup, ec);
+        fs::rename(dst,backup,ec);
         if (ec) {
-            std::string ignored; (void)removeRecursive(staged, ignored);
-            s.status = "Paste failed; existing item was not changed: " + ec.message();
+            std::string ignored; (void)removeRecursive(staged,ignored);
+            message = "Paste failed; existing item was not changed: " + ec.message();
             return false;
         }
         backedUp = true;
     }
 
-    fs::rename(staged, dst, ec);
-    if (ec) {
-        const std::string installError = ec.message();
+    if (operation.cancelRequested.load()) {
         if (backedUp) {
-            std::error_code restoreError; fs::rename(backup, dst, restoreError);
-            if (restoreError) s.status = "Paste failed; recover original from " + backup.string() + ": " + restoreError.message();
-            else s.status = "Paste failed; original item restored: " + installError;
-        } else s.status = "Paste failed: " + installError;
-        std::string ignored; (void)removeRecursive(staged, ignored);
+            std::error_code restoreError; fs::rename(backup,dst,restoreError);
+            if (restoreError) message = "Cancelled; recover original from " + backup.string() + ": " + restoreError.message();
+            else message = "Paste cancelled";
+        } else message = "Paste cancelled";
+        std::string ignored; (void)removeRecursive(staged,ignored);
+        return false;
+    }
+
+    fs::rename(staged,dst,ec);
+    if (ec) {
+        const std::string installError=ec.message();
+        if (backedUp) {
+            std::error_code restoreError; fs::rename(backup,dst,restoreError);
+            if (restoreError) message = "Paste failed; recover original from " + backup.string() + ": " + restoreError.message();
+            else message = "Paste failed; original item restored: " + installError;
+        } else message = "Paste failed: " + installError;
+        std::string ignored; (void)removeRecursive(staged,ignored);
         return false;
     }
 
     if (backedUp) {
         std::string cleanupError;
-        if (!removeRecursive(backup, cleanupError))
-            s.status = "Paste completed; previous item remains at " + backup.string() + ": " + cleanupError;
+        if (!removeRecursive(backup,cleanupError))
+            message = "Paste completed; previous item remains at " + backup.string() + ": " + cleanupError;
     }
     if (cut) {
         std::string removeError;
-        if (!removeRecursive(src, removeError)) {
-            s.status = "Copied successfully, but source cleanup failed: " + removeError;
+        if (!removeRecursive(src,removeError)) {
+            message = "Copied successfully, but source cleanup failed: " + removeError;
             return false;
         }
     }
     return true;
 }
 
-static void continuePasteClipboard(ExplorerState& s) {
-    if (!s.vfs || !s.vfs->isLocal() || s.clipboard.paths.empty()) return;
-    const fs::path destDir = s.path;
+static bool startPasteOperation(ExplorerState& s, const fs::path& src, const fs::path& dst,
+                                bool cut, bool overwrite) {
+    FileOperationQueue& operation=s.operations;
+    if (operation.active.load()) return false;
+    if (operation.worker.joinable()) operation.worker.join();
 
-    while (s.pendingPasteIndex < s.clipboard.paths.size()) {
-        const fs::path src = s.clipboard.paths[s.pendingPasteIndex];
-        const fs::path dst = destDir / src.filename();
+    operation.cancelRequested.store(false);
+    operation.finished.store(false);
+    operation.completed.store(0);
+    operation.total.store(0);
+    operation.label=src.filename().string();
+    if (operation.label.empty()) operation.label=src.string();
+    operation.error.clear();
+    operation.success=false;
+    operation.batchIndex=s.pendingPasteIndex+1;
+    operation.batchTotal=s.clipboard.paths.size();
+    operation.active.store(true);
+
+    try {
+        operation.worker=std::thread([&operation,src,dst,cut,overwrite]() {
+            std::string message;
+            const bool success=finishPasteOne(src,dst,cut,overwrite,operation,message);
+            {
+                std::lock_guard<std::mutex> lock(operation.resultMutex);
+                operation.error=std::move(message);
+                operation.success=success;
+            }
+            operation.finished.store(true);
+        });
+    } catch (const std::exception& e) {
+        operation.active.store(false);
+        operation.error=std::string("Could not start file operation: ")+e.what();
+        return false;
+    }
+    return true;
+}
+
+static void continuePasteClipboard(ExplorerState& s) {
+    if (!s.vfs || !s.vfs->isLocal() || s.clipboard.paths.empty() || s.operations.active.load()) return;
+    const fs::path destDir=s.path;
+
+    while (s.pendingPasteIndex<s.clipboard.paths.size()) {
+        const fs::path src=s.clipboard.paths[s.pendingPasteIndex];
+        const fs::path dst=destDir/src.filename();
         std::error_code ec;
-        if (fs::exists(dst, ec)) {
-            s.pendingPasteSource = src;
-            s.pendingPasteDestination = dst;
-            s.flags.pendingPasteCut = s.clipboard.cut;
-            s.modal = Modal::PasteOverwrite;
-            s.menu.open = false;
+        if (fs::exists(dst,ec) || fs::is_symlink(fs::symlink_status(dst,ec))) {
+            s.pendingPasteSource=src;
+            s.pendingPasteDestination=dst;
+            s.flags.pendingPasteCut=s.clipboard.cut;
+            s.modal=Modal::PasteOverwrite;
+            s.menu.open=false;
             unfocus(s);
             return;
         }
-        if (!finishPasteOne(s, src, dst, s.clipboard.cut, false)) {
-            s.clipboard.paths.clear();
-            s.clipboard.cut = false;
-            s.pendingPasteIndex = 0;
-            refresh(s);
+        if (!startPasteOperation(s,src,dst,s.clipboard.cut,false)) {
+            s.status=s.operations.error.empty()?"Could not start paste operation":s.operations.error;
+            s.clipboard.paths.clear(); s.clipboard.cut=false; s.pendingPasteIndex=0;
             return;
         }
-        ++s.pendingPasteIndex;
+        return;
     }
 
     s.clipboard.paths.clear();
-    s.clipboard.cut = false;
-    s.pendingPasteIndex = 0;
+    s.clipboard.cut=false;
+    s.pendingPasteIndex=0;
     refresh(s);
-    s.status = "Paste complete";
+    s.status="Paste complete";
 }
 
 static fs::path nextCopyName(const fs::path& dst) {
-    const fs::path parent = dst.parent_path();
-    const std::string ext = dst.has_extension() ? dst.extension().string() : std::string{};
-    const std::string stem = dst.has_extension() ? dst.stem().string() : dst.filename().string();
-    for (unsigned i=1; i<100000; ++i) {
-        const std::string suffix = i==1 ? " (copy)" : " (copy " + std::to_string(i) + ")";
-        const fs::path candidate = parent / (stem + suffix + ext);
+    const fs::path parent=dst.parent_path();
+    const std::string ext=dst.has_extension()?dst.extension().string():std::string{};
+    const std::string stem=dst.has_extension()?dst.stem().string():dst.filename().string();
+    for(unsigned i=1;i<100000;++i) {
+        const std::string suffix=i==1?" (copy)":" (copy "+std::to_string(i)+")";
+        const fs::path candidate=parent/(stem+suffix+ext);
         std::error_code ec;
-        if (!fs::exists(candidate,ec) && !ec) return candidate;
+        if(!fs::exists(candidate,ec) && !ec) return candidate;
     }
-    return parent / (dst.filename().string() + ".copy");
+    return parent/(dst.filename().string()+".copy");
 }
 
 static void resolvePasteConflict(ExplorerState& s, int choice) {
-    if (s.modal != Modal::PasteOverwrite) return;
-    bool ok = true;
-    if (choice == 0) {
-        ok = finishPasteOne(s,s.pendingPasteSource,s.pendingPasteDestination,s.flags.pendingPasteCut,true);
-    } else if (choice == 1) {
-        s.status = "Skipped: " + s.pendingPasteDestination.filename().string();
-    } else if (choice == 2) {
-        const fs::path alternate = nextCopyName(s.pendingPasteDestination);
-        ok = finishPasteOne(s,s.pendingPasteSource,alternate,s.flags.pendingPasteCut,false);
-        if (ok) s.status = "Kept both; created " + alternate.filename().string();
+    if(s.modal!=Modal::PasteOverwrite) return;
+    const fs::path source=s.pendingPasteSource;
+    const fs::path destination=s.pendingPasteDestination;
+    const bool cut=s.flags.pendingPasteCut;
+    s.modal=Modal::None;
+    unfocus(s);
+
+    if(choice==0) {
+        if(!startPasteOperation(s,source,destination,cut,true)) {
+            s.status=s.operations.error.empty()?"Could not start replacement":s.operations.error;
+            s.clipboard.paths.clear(); s.clipboard.cut=false; s.pendingPasteIndex=0;
+        }
+    } else if(choice==1) {
+        s.status="Skipped: "+destination.filename().string();
+        ++s.pendingPasteIndex;
+        continuePasteClipboard(s);
+    } else if(choice==2) {
+        const fs::path alternate=nextCopyName(destination);
+        if(!startPasteOperation(s,source,alternate,cut,false)) {
+            s.status=s.operations.error.empty()?"Could not start keep-both copy":s.operations.error;
+            s.clipboard.paths.clear(); s.clipboard.cut=false; s.pendingPasteIndex=0;
+        }
     } else {
         s.clipboard.paths.clear(); s.clipboard.cut=false; s.pendingPasteIndex=0;
-        s.modal=Modal::None; unfocus(s); s.status="Paste cancelled";
-        return;
+        s.status="Paste cancelled";
     }
-
-    if (!ok) {
-        s.clipboard.paths.clear(); s.clipboard.cut=false; s.pendingPasteIndex=0;
-        s.modal=Modal::None; unfocus(s); refresh(s);
-        return;
-    }
-    ++s.pendingPasteIndex;
-    s.modal=Modal::None; unfocus(s);
-    continuePasteClipboard(s);
 }
 
 static void pasteClipboard(ExplorerState& s) {
-    if (!s.vfs || !s.vfs->isLocal() || s.clipboard.paths.empty()) return;
-    s.pendingPasteIndex = 0;
+    if(!s.vfs || !s.vfs->isLocal() || s.clipboard.paths.empty()) return;
+    if(s.operations.active.load()) { s.status="A file operation is already running"; return; }
+    s.pendingPasteIndex=0;
     continuePasteClipboard(s);
 }
 
+static void pollPasteOperation(ExplorerState& s) {
+    FileOperationQueue& operation=s.operations;
+    if(!operation.active.load() || !operation.finished.load()) return;
+    if(operation.worker.joinable()) operation.worker.join();
+
+    bool success=false;
+    std::string message;
+    {
+        std::lock_guard<std::mutex> lock(operation.resultMutex);
+        success=operation.success;
+        message=operation.error;
+    }
+    operation.active.store(false);
+
+    if(!success) {
+        s.status=operation.cancelRequested.load()?"Paste cancelled":(message.empty()?"Paste failed":message);
+        s.clipboard.paths.clear(); s.clipboard.cut=false; s.pendingPasteIndex=0;
+        refresh(s);
+        return;
+    }
+
+    if(!message.empty()) s.status=message;
+    ++s.pendingPasteIndex;
+    continuePasteClipboard(s);
+}
 
 static bool runCommandPath(const char* cmd, const fs::path& p) {
     pid_t pid = fork();
