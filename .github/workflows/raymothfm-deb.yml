@@ -128,7 +128,7 @@ jobs:
           fi
 
           mapfile -t runtime_libraries < <(
-            ldd "${binary}" | awk '/=> \/\// { print $3 } /^\// { print $1 }' | sort -u
+            ldd "${binary}" | awk '/=> \// { print $3 } /^\// { print $1 }' | sort -u
           )
           runtime_packages=()
           for library in "${runtime_libraries[@]}"; do
