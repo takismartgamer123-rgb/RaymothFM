@@ -1,9 +1,10 @@
-name: Build RayMothFM Debian package
+name: Build RayMothFM Debian packages
 
 on:
   push:
     branches:
       - feature/gamma-workflow-settings-shortcuts
+      - upstream-lightweight-profile
   pull_request:
     branches:
       - upstream-lightweight-profile
@@ -18,17 +19,46 @@ concurrency:
 
 jobs:
   build-deb:
-    name: Build .deb (amd64)
+    name: Debian 11 .deb (${{ matrix.arch }})
     runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            image: debian:11
+            platform: linux/amd64
+          - arch: i386
+            image: i386/debian:11
+            platform: linux/386
 
     steps:
       - name: Check out source
         uses: actions/checkout@v4
 
-      - name: Install build dependencies
+      - name: Build and package in Debian 11
+        env:
+          BUILD_ARCH: ${{ matrix.arch }}
+          DEBIAN_IMAGE: ${{ matrix.image }}
+          DOCKER_PLATFORM: ${{ matrix.platform }}
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          docker run --rm \
+            --platform "${DOCKER_PLATFORM}" \
+            -e BUILD_ARCH="${BUILD_ARCH}" \
+            -v "${GITHUB_WORKSPACE}:/src" \
+            -w /src \
+            "${DEBIAN_IMAGE}" bash -s <<'DEBIAN_BUILD'
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+
+          echo "=== Build environment ==="
+          cat /etc/os-release
+          actual_arch="$(dpkg --print-architecture)"
+          echo "Target architecture: ${actual_arch}"
+          test "${actual_arch}" = "${BUILD_ARCH}"
+
+          apt-get update
+          apt-get install -y --no-install-recommends \
             build-essential \
             cmake \
             git \
@@ -42,16 +72,21 @@ jobs:
             libxrandr-dev \
             libxi-dev \
             libxcursor-dev \
-            libxinerama-dev
+            libxinerama-dev \
+            libxext-dev \
+            libxfixes-dev \
+            libxxf86vm-dev \
+            libxrender-dev \
+            ca-certificates \
+            file \
+            xz-utils \
+            zstd \
+            p7zip-full
 
-      - name: Build static Raylib
-        env:
-          RAYLIB_VERSION: 5.5
-        run: |
-          git clone --depth 1 --branch "${RAYLIB_VERSION}" \
-            https://github.com/raysan5/raylib.git "${RUNNER_TEMP}/raylib"
-
-          cmake -S "${RUNNER_TEMP}/raylib" -B "${RUNNER_TEMP}/raylib-build" \
+          # Build Raylib for this exact target architecture and link it statically.
+          git clone --depth 1 --branch 5.5 \
+            https://github.com/raysan5/raylib.git /tmp/raylib
+          cmake -S /tmp/raylib -B /tmp/raylib-build \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX=/usr/local \
             -DBUILD_SHARED_LIBS=OFF \
@@ -59,42 +94,67 @@ jobs:
             -DUSE_EXTERNAL_GLFW=OFF \
             -DGLFW_BUILD_X11=ON \
             -DGLFW_BUILD_WAYLAND=OFF
+          cmake --build /tmp/raylib-build --parallel "$(nproc)"
+          cmake --install /tmp/raylib-build
 
-          cmake --build "${RUNNER_TEMP}/raylib-build" --parallel "$(nproc)"
-          sudo cmake --install "${RUNNER_TEMP}/raylib-build"
-
-          echo "PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/usr/local/lib/x86_64-linux-gnu/pkgconfig:${PKG_CONFIG_PATH:-}" >> "${GITHUB_ENV}"
+          export PKG_CONFIG_PATH="/usr/local/lib/pkgconfig:/usr/local/lib/$(dpkg-architecture -qDEB_HOST_MULTIARCH):${PKG_CONFIG_PATH:-}"
           pkg-config --exists raylib
           raylib_libdir="$(pkg-config --variable=libdir raylib)"
           test -f "${raylib_libdir}/libraylib.a"
 
-      - name: Compile RayMothFM
-        run: |
+          # OpenSSL is statically linked so Debian 11's libssl1.1 ABI is not
+          # required at runtime on newer Debian releases (which use libssl3).
+          static_ssl_libs="-Wl,-Bstatic -lssl -lcrypto -Wl,-Bdynamic"
+          package_libs="$(pkg-config --libs libarchive libmagic) ${static_ssl_libs}"
+
           make -C code clean
-          make -C code -j"$(nproc)"
-          test -x code/raymothfm
-          file code/raymothfm
+          make -C code -j"$(nproc)" PKG_LIBS="${package_libs}"
+          binary="code/raymothfm"
+          test -x "${binary}"
+          file "${binary}"
+          "${binary}" --help
 
-      - name: Assemble Debian package
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          version="$(tr -d '[:space:]' < code/VERSION)"
-          if [[ -z "${version}" ]]; then
-            echo "code/VERSION is empty" >&2
+          # Derive runtime Depends from the actual shared libraries and the
+          # Debian packages that own them in this Debian 11 build environment.
+          ldd "${binary}" | tee /tmp/raymothfm-ldd.txt
+          if grep -q "not found" /tmp/raymothfm-ldd.txt; then
+            echo "Unresolved runtime library found" >&2
             exit 1
           fi
+
+          mapfile -t runtime_libraries < <(
+            ldd "${binary}" | awk '/=> \/\// { print $3 } /^\// { print $1 }' | sort -u
+          )
+          runtime_packages=()
+          for library in "${runtime_libraries[@]}"; do
+            resolved_library="$(readlink -f "${library}")"
+            owner="$(dpkg-query -S "${resolved_library}" 2>/dev/null | head -n 1 | cut -d: -f1 || true)"
+            if [[ -z "${owner}" ]]; then
+              echo "Could not map runtime library to a Debian package: ${resolved_library}" >&2
+              exit 1
+            fi
+            runtime_packages+=("${owner}")
+          done
+          depends="$(printf '%s\n' "${runtime_packages[@]}" | sort -u | paste -sd ', ' -)"
+          if [[ -z "${depends}" ]]; then
+            echo "No runtime dependencies were detected" >&2
+            exit 1
+          fi
+          echo "Package Depends: ${depends}"
+
+          version="$(tr -d '[:space:]' < code/VERSION)"
+          test -n "${version}"
           dpkg --validate-version "${version}"
 
-          package_root="$(mktemp -d)"
+          package_root="/tmp/raymothfm-package"
+          output_dir="/src/dist/${BUILD_ARCH}"
           mkdir -p "${package_root}/DEBIAN" \
                    "${package_root}/usr/bin" \
                    "${package_root}/usr/share/applications" \
                    "${package_root}/usr/share/doc/raymothfm" \
-                   dist
+                   "${output_dir}"
 
-          install -m 0755 code/raymothfm "${package_root}/usr/bin/raymothfm"
+          install -m 0755 "${binary}" "${package_root}/usr/bin/raymothfm"
           install -m 0644 README.md "${package_root}/usr/share/doc/raymothfm/README.md"
 
           cat > "${package_root}/usr/share/applications/raymothfm.desktop" <<'DESKTOP'
@@ -110,39 +170,13 @@ jobs:
           MimeType=inode/directory;
           DESKTOP
 
-          # dpkg-shlibdeps expects source-package metadata in debian/control.
-          # Create a minimal temporary control file for dependency resolution only.
-          mkdir -p debian
-          cat > debian/control <<'SOURCE_CONTROL'
-          Source: raymothfm
-          Section: utils
-          Priority: optional
-          Maintainer: RayMothFM contributors <takismartgamer123-rgb@users.noreply.github.com>
-          Standards-Version: 4.6.0
-
-          Package: raymothfm
-          Architecture: any
-          Description: Lightweight graphical file manager
-           RayMothFM is a fast, keyboard-driven Linux file manager built with Raylib.
-          SOURCE_CONTROL
-
-          shlib_output="$(dpkg-shlibdeps -O -e"${package_root}/usr/bin/raymothfm")"
-          printf '%s\n' "${shlib_output}"
-          depends="$(printf '%s\n' "${shlib_output}" | sed -n 's/^shlibs:Depends=//p' | head -n 1)"
-          rm -rf debian
-
-          if [[ -z "${depends}" ]]; then
-            echo "Could not determine shared-library dependencies" >&2
-            exit 1
-          fi
-
           cat > "${package_root}/DEBIAN/control" <<CONTROL
           Package: raymothfm
           Version: ${version}
           Section: utils
           Priority: optional
-          Architecture: amd64
-          Maintainer: RayMothFM contributors <takismartgamer123-rgb@users.noreply.github.com>
+          Architecture: ${BUILD_ARCH}
+          Maintainer: RayMothFM contributors <raymothfm@users.noreply.github.com>
           Depends: ${depends}
           Homepage: https://github.com/takismartgamer123-rgb/RaymothFM
           Description: Lightweight graphical file manager
@@ -152,24 +186,27 @@ jobs:
           chmod 0755 "${package_root}/DEBIAN"
           chmod 0644 "${package_root}/DEBIAN/control"
 
-          ldd "${package_root}/usr/bin/raymothfm" | tee dist/ldd.txt
-          if grep -q "not found" dist/ldd.txt; then
-            echo "The built executable has unresolved shared libraries" >&2
-            exit 1
-          fi
-
-          deb="dist/raymothfm_${version}_amd64.deb"
+          deb="${output_dir}/raymothfm_${version}_${BUILD_ARCH}.deb"
           dpkg-deb --root-owner-group --build "${package_root}" "${deb}"
           dpkg-deb --info "${deb}"
           sha256sum "${deb}" > "${deb}.sha256"
+          cp /tmp/raymothfm-ldd.txt "${output_dir}/ldd.txt"
 
-      - name: Upload Debian package
+          # Verify the package is installable from the Debian 11 repositories.
+          apt-get install -y --no-install-recommends "./${deb}"
+          dpkg-query -W raymothfm
+          raymothfm --help
+
+          echo "Successfully built and installed: ${deb}"
+          DEBIAN_BUILD
+
+      - name: Upload Debian package artifact
         uses: actions/upload-artifact@v4
         with:
-          name: raymothfm-deb-amd64
+          name: raymothfm-deb-${{ matrix.arch }}-debian11
           path: |
-            dist/*.deb
-            dist/*.deb.sha256
-            dist/ldd.txt
+            dist/${{ matrix.arch }}/*.deb
+            dist/${{ matrix.arch }}/*.deb.sha256
+            dist/${{ matrix.arch }}/ldd.txt
           if-no-files-found: error
           retention-days: 14
