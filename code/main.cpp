@@ -801,8 +801,8 @@ struct FileOperationQueue {
     std::atomic_bool active{false};
     std::atomic_bool cancelRequested{false};
     std::atomic_bool finished{false};
-    std::atomic_uint64_t completed{0};
-    std::atomic_uint64_t total{0};
+    std::atomic<uint64_t> completed{0};
+    std::atomic<uint64_t> total{0};
     std::mutex resultMutex;
     std::string label;
     std::string error;
@@ -906,6 +906,7 @@ struct ExplorerState {
     std::unordered_set<std::string> thumbnailProtected;
     fs::path pendingPasteSource;
     fs::path pendingPasteDestination;
+    fs::path pendingPasteDirectory;
     std::vector<fs::path> pendingPermanentDelete;
     size_t pendingPasteIndex = 0;
     std::string convertInput;
@@ -2317,8 +2318,8 @@ static bool startPasteOperation(ExplorerState& s, const fs::path& src, const fs:
 }
 
 static void continuePasteClipboard(ExplorerState& s) {
-    if (!s.vfs || !s.vfs->isLocal() || s.clipboard.paths.empty() || s.operations.active.load()) return;
-    const fs::path destDir=s.path;
+    if (s.pendingPasteDirectory.empty() || s.clipboard.paths.empty() || s.operations.active.load()) return;
+    const fs::path destDir=s.pendingPasteDirectory;
 
     while (s.pendingPasteIndex<s.clipboard.paths.size()) {
         const fs::path src=s.clipboard.paths[s.pendingPasteIndex];
@@ -2336,6 +2337,7 @@ static void continuePasteClipboard(ExplorerState& s) {
         if (!startPasteOperation(s,src,dst,s.clipboard.cut,false)) {
             s.status=s.operations.error.empty()?"Could not start paste operation":s.operations.error;
             s.clipboard.paths.clear(); s.clipboard.cut=false; s.pendingPasteIndex=0;
+            s.pendingPasteDirectory.clear();
             return;
         }
         return;
@@ -2344,7 +2346,9 @@ static void continuePasteClipboard(ExplorerState& s) {
     s.clipboard.paths.clear();
     s.clipboard.cut=false;
     s.pendingPasteIndex=0;
-    refresh(s);
+    const bool destinationVisible=fs::path(s.path)==s.pendingPasteDirectory;
+    s.pendingPasteDirectory.clear();
+    if(destinationVisible) refresh(s);
     s.status="Paste complete";
 }
 
@@ -2372,7 +2376,7 @@ static void resolvePasteConflict(ExplorerState& s, int choice) {
     if(choice==0) {
         if(!startPasteOperation(s,source,destination,cut,true)) {
             s.status=s.operations.error.empty()?"Could not start replacement":s.operations.error;
-            s.clipboard.paths.clear(); s.clipboard.cut=false; s.pendingPasteIndex=0;
+            s.clipboard.paths.clear(); s.clipboard.cut=false; s.pendingPasteIndex=0; s.pendingPasteDirectory.clear();
         }
     } else if(choice==1) {
         s.status="Skipped: "+destination.filename().string();
@@ -2382,10 +2386,10 @@ static void resolvePasteConflict(ExplorerState& s, int choice) {
         const fs::path alternate=nextCopyName(destination);
         if(!startPasteOperation(s,source,alternate,cut,false)) {
             s.status=s.operations.error.empty()?"Could not start keep-both copy":s.operations.error;
-            s.clipboard.paths.clear(); s.clipboard.cut=false; s.pendingPasteIndex=0;
+            s.clipboard.paths.clear(); s.clipboard.cut=false; s.pendingPasteIndex=0; s.pendingPasteDirectory.clear();
         }
     } else {
-        s.clipboard.paths.clear(); s.clipboard.cut=false; s.pendingPasteIndex=0;
+        s.clipboard.paths.clear(); s.clipboard.cut=false; s.pendingPasteIndex=0; s.pendingPasteDirectory.clear();
         s.status="Paste cancelled";
     }
 }
@@ -2394,6 +2398,7 @@ static void pasteClipboard(ExplorerState& s) {
     if(!s.vfs || !s.vfs->isLocal() || s.clipboard.paths.empty()) return;
     if(s.operations.active.load()) { s.status="A file operation is already running"; return; }
     s.pendingPasteIndex=0;
+    s.pendingPasteDirectory=fs::path(s.path);
     continuePasteClipboard(s);
 }
 
@@ -2414,7 +2419,9 @@ static void pollPasteOperation(ExplorerState& s) {
     if(!success) {
         s.status=operation.cancelRequested.load()?"Paste cancelled":(message.empty()?"Paste failed":message);
         s.clipboard.paths.clear(); s.clipboard.cut=false; s.pendingPasteIndex=0;
-        refresh(s);
+        const bool destinationVisible=fs::path(s.path)==s.pendingPasteDirectory;
+        s.pendingPasteDirectory.clear();
+        if(destinationVisible) refresh(s);
         return;
     }
 
