@@ -42,7 +42,7 @@ jobs:
           DEBIAN_IMAGE: ${{ matrix.image }}
           DOCKER_PLATFORM: ${{ matrix.platform }}
         run: |
-          docker run --rm \
+          docker run --rm -i \
             --platform "${DOCKER_PLATFORM}" \
             -e BUILD_ARCH="${BUILD_ARCH}" \
             -v "${GITHUB_WORKSPACE}:/src" \
