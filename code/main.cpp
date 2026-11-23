@@ -2125,30 +2125,63 @@ static void doCopyOrCut(ExplorerState& s, bool cut) {
 }
 
 static bool finishPasteOne(ExplorerState& s, const fs::path& src, const fs::path& dst, bool cut, bool overwrite) {
+    if (src == dst) { s.status = "Source and destination are the same"; return true; }
+    std::error_code ec;
+    const bool destinationExists = fs::exists(dst, ec) || fs::is_symlink(fs::symlink_status(dst, ec));
+    if (ec) { s.status = "Paste failed: " + ec.message(); return false; }
+    if (destinationExists && !overwrite) { s.status = "Destination already exists"; return false; }
+
+    static uint64_t sequence = 0;
+    fs::path staged, backup;
+    for (int attempt=0; attempt<16; ++attempt) {
+        const std::string suffix = ".raymothfm-" + std::to_string((long long)getpid()) + "-" + std::to_string(++sequence);
+        staged = dst; staged += suffix + ".tmp";
+        backup = dst; backup += suffix + ".bak";
+        std::error_code check;
+        if (!fs::exists(staged,check) && !fs::exists(backup,check) && !check) break;
+        staged.clear(); backup.clear();
+    }
+    if (staged.empty() || backup.empty()) { s.status = "Paste failed: cannot allocate a staging name"; return false; }
+
     std::string error;
-    if (cut) {
-        std::error_code ec;
-        if (overwrite && fs::exists(dst, ec)) {
-            fs::remove_all(dst, ec);
-            if (ec) { s.status = "Paste failed: " + ec.message(); return false; }
-        }
-        fs::rename(src, dst, ec);
+    if (!copyRecursive(src, staged, error)) {
+        std::string ignored; (void)removeRecursive(staged, ignored);
+        s.status = "Paste failed while preparing replacement: " + error;
+        return false;
+    }
+
+    bool backedUp = false;
+    if (destinationExists) {
+        fs::rename(dst, backup, ec);
         if (ec) {
-            if (!copyRecursive(src, dst, error) || !removeRecursive(src, error)) {
-                s.status = "Paste failed: " + error;
-                return false;
-            }
+            std::string ignored; (void)removeRecursive(staged, ignored);
+            s.status = "Paste failed; existing item was not changed: " + ec.message();
+            return false;
         }
-    } else {
-        if (overwrite) {
-            std::error_code ec;
-            if (fs::exists(dst, ec)) {
-                fs::remove_all(dst, ec);
-                if (ec) { s.status = "Paste failed: " + ec.message(); return false; }
-            }
-        }
-        if (!copyRecursive(src, dst, error)) {
-            s.status = "Paste failed: " + error;
+        backedUp = true;
+    }
+
+    fs::rename(staged, dst, ec);
+    if (ec) {
+        const std::string installError = ec.message();
+        if (backedUp) {
+            std::error_code restoreError; fs::rename(backup, dst, restoreError);
+            if (restoreError) s.status = "Paste failed; recover original from " + backup.string() + ": " + restoreError.message();
+            else s.status = "Paste failed; original item restored: " + installError;
+        } else s.status = "Paste failed: " + installError;
+        std::string ignored; (void)removeRecursive(staged, ignored);
+        return false;
+    }
+
+    if (backedUp) {
+        std::string cleanupError;
+        if (!removeRecursive(backup, cleanupError))
+            s.status = "Paste completed; previous item remains at " + backup.string() + ": " + cleanupError;
+    }
+    if (cut) {
+        std::string removeError;
+        if (!removeRecursive(src, removeError)) {
+            s.status = "Copied successfully, but source cleanup failed: " + removeError;
             return false;
         }
     }
@@ -2187,6 +2220,46 @@ static void continuePasteClipboard(ExplorerState& s) {
     s.pendingPasteIndex = 0;
     refresh(s);
     s.status = "Paste complete";
+}
+
+static fs::path nextCopyName(const fs::path& dst) {
+    const fs::path parent = dst.parent_path();
+    const std::string ext = dst.has_extension() ? dst.extension().string() : std::string{};
+    const std::string stem = dst.has_extension() ? dst.stem().string() : dst.filename().string();
+    for (unsigned i=1; i<100000; ++i) {
+        const std::string suffix = i==1 ? " (copy)" : " (copy " + std::to_string(i) + ")";
+        const fs::path candidate = parent / (stem + suffix + ext);
+        std::error_code ec;
+        if (!fs::exists(candidate,ec) && !ec) return candidate;
+    }
+    return parent / (dst.filename().string() + ".copy");
+}
+
+static void resolvePasteConflict(ExplorerState& s, int choice) {
+    if (s.modal != Modal::PasteOverwrite) return;
+    bool ok = true;
+    if (choice == 0) {
+        ok = finishPasteOne(s,s.pendingPasteSource,s.pendingPasteDestination,s.flags.pendingPasteCut,true);
+    } else if (choice == 1) {
+        s.status = "Skipped: " + s.pendingPasteDestination.filename().string();
+    } else if (choice == 2) {
+        const fs::path alternate = nextCopyName(s.pendingPasteDestination);
+        ok = finishPasteOne(s,s.pendingPasteSource,alternate,s.flags.pendingPasteCut,false);
+        if (ok) s.status = "Kept both; created " + alternate.filename().string();
+    } else {
+        s.clipboard.paths.clear(); s.clipboard.cut=false; s.pendingPasteIndex=0;
+        s.modal=Modal::None; unfocus(s); s.status="Paste cancelled";
+        return;
+    }
+
+    if (!ok) {
+        s.clipboard.paths.clear(); s.clipboard.cut=false; s.pendingPasteIndex=0;
+        s.modal=Modal::None; unfocus(s); refresh(s);
+        return;
+    }
+    ++s.pendingPasteIndex;
+    s.modal=Modal::None; unfocus(s);
+    continuePasteClipboard(s);
 }
 
 static void pasteClipboard(ExplorerState& s) {
