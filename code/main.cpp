@@ -2442,6 +2442,7 @@ static bool xdgTrash(const fs::path& p) {
 }
 
 static void openPermanentDeleteConfirm(ExplorerState& s) {
+    if (s.operations.active.load()) { s.status="Wait for the current file operation to finish or cancel it with Esc"; return; }
     if (!s.vfs || !s.vfs->isLocal()) return;
     s.pendingPermanentDelete.clear();
     for (int idx : selectedRows(s)) {
@@ -2455,6 +2456,7 @@ static void openPermanentDeleteConfirm(ExplorerState& s) {
 }
 
 static void applyPermanentDelete(ExplorerState& s) {
+    if (s.operations.active.load()) { s.status="Cannot delete while a file operation is running"; return; }
     if (!s.vfs || !s.vfs->isLocal() || s.pendingPermanentDelete.empty()) return;
     std::string error;
     for (const fs::path& p : s.pendingPermanentDelete) {
@@ -2473,6 +2475,7 @@ static void applyPermanentDelete(ExplorerState& s) {
 }
 
 static void deleteSelection(ExplorerState& s, bool permanent=false) {
+    if (s.operations.active.load()) { s.status="Wait for the current file operation to finish or cancel it with Esc"; return; }
     if (!s.vfs || !s.vfs->isLocal()) return;
     std::string error;
     for (int idx : selectedRows(s)) {
@@ -2643,6 +2646,7 @@ static void startCurrentDirectoryProperties(ExplorerState& s) {
 }
 
 static void startRename(ExplorerState& s) {
+    if (s.operations.active.load()) { s.status="Wait for the current file operation to finish or cancel it with Esc"; return; }
     const auto ids=selectedRows(s); if (ids.size()!=1 || !s.vfs || !s.vfs->isLocal()) return;
     s.renameEdit=s.rows[ids.front()].name; s.modal=Modal::Rename; s.modalError.clear(); focus(s,TextField::Rename,true); s.menu.open=false;
 }
@@ -3874,11 +3878,12 @@ int main(int argc, char** argv) {
              IsKeyDown(KEY_RIGHT) || IsKeyDown(KEY_PAGE_UP) || IsKeyDown(KEY_PAGE_DOWN) ||
              IsKeyDown(KEY_HOME) || IsKeyDown(KEY_END));
         const bool thumbBusy = thumbnailWorker.hasPendingWork();
+        const bool operationBusy = st.operations.active.load();
         const double frameNow = GetTime();
         const bool mouseBeamAnimating = st.flags.cursorBeam && mouseLaser.active(frameNow);
-        if (thumbBusy || navigationHeld || mouseBeamAnimating) {
+        if (thumbBusy || operationBusy || navigationHeld || mouseBeamAnimating) {
             DisableEventWaiting();
-            if (thumbBusy && !navigationHeld && !mouseBeamAnimating) WaitTime(0.004);
+            if ((thumbBusy || operationBusy) && !navigationHeld && !mouseBeamAnimating) WaitTime(0.004);
         } else EnableEventWaiting();
         if (WindowShouldClose()) break;
         if (isCtrlDown() && IsKeyPressed(KEY_Q)) break;
@@ -4278,11 +4283,11 @@ int main(int argc, char** argv) {
             if(total) label+="  "+std::to_string(done)+"/"+std::to_string(total)+"  "+std::to_string(percent)+"%";
             else label+="  Preparing...";
             DrawText(label.c_str(),10,H-statusH+8,uiFont(12),t.text);
-            Rectangle bar{(float)W-205.0f,(float)H-statusH+11.0f,155.0f,8.0f};
+            Rectangle bar{(float)W-260.0f,(float)H-statusH+11.0f,160.0f,8.0f};
             DrawRectangleRec(bar,t.panel);
             DrawRectangleLinesEx(bar,1,t.line);
             if(total && bar.width>2) DrawRectangleRec({bar.x+1,bar.y+1,(bar.width-2)*percent/100.0f,bar.height-2},t.accent);
-            DrawText("Esc cancel",W-75,H-statusH+8,uiFont(10),t.muted);
+            DrawText("Esc cancel",W-82,H-statusH+8,uiFont(10),t.muted);
         } else {
             DrawText(st.status.c_str(),10,H-statusH+8,uiFont(13),t.muted);
         }
