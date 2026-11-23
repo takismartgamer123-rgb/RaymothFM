@@ -3822,6 +3822,7 @@ int main(int argc, char** argv) {
 
     for (;;) {
         pumpThumbnailResults(st);
+        pollPasteOperation(st);
         const bool navigationHeld =
             st.focusedField == TextField::None &&
             (IsKeyDown(KEY_UP) || IsKeyDown(KEY_DOWN) || IsKeyDown(KEY_LEFT) ||
@@ -3839,6 +3840,10 @@ int main(int argc, char** argv) {
         if (IsKeyPressed(KEY_ESCAPE)) {
             if (st.menu.open) st.menu.open=false;
             else if (st.modal==Modal::PasteOverwrite) resolvePasteConflict(st,3);
+            else if (st.operations.active.load()) {
+                st.operations.cancelRequested.store(true);
+                st.status="Cancelling file operation...";
+            }
             else if (st.modal!=Modal::None) { if (st.modal==Modal::ConfirmPermanentDelete) st.pendingPermanentDelete.clear(); st.modal=Modal::None; st.modalError.clear(); unfocus(st); }
             else if (st.focusedField!=TextField::None) unfocus(st);
         }
@@ -4217,8 +4222,25 @@ int main(int argc, char** argv) {
             if(x2>x1 && y2>y1){Rectangle rr{x1,y1,x2-x1,y2-y1};DrawRectangleRec(rr,Fade(t.accent,0.16f));DrawRectangleLinesEx(rr,1.0f,t.accent);}
         }
 
-        // Status bar
-        DrawRectangle(0,H-statusH,W,statusH,t.panel2); DrawLine(0,H-statusH,W,H-statusH,t.line); DrawText(st.status.c_str(), 10, H-statusH+8, uiFont(13), t.muted);
+        // Status bar / file operation progress
+        DrawRectangle(0,H-statusH,W,statusH,t.panel2);
+        DrawLine(0,H-statusH,W,H-statusH,t.line);
+        if (st.operations.active.load()) {
+            const uint64_t total=st.operations.total.load();
+            const uint64_t done=st.operations.completed.load();
+            const int percent=total?std::clamp((int)(100.0*std::min(done,total)/total),0,100):0;
+            std::string label="Copying "+st.operations.label+" ("+std::to_string(st.operations.batchIndex)+"/"+std::to_string(st.operations.batchTotal)+")";
+            if(total) label+="  "+std::to_string(done)+"/"+std::to_string(total)+"  "+std::to_string(percent)+"%";
+            else label+="  Preparing...";
+            DrawText(label.c_str(),10,H-statusH+8,uiFont(12),t.text);
+            Rectangle bar{(float)W-205.0f,(float)H-statusH+11.0f,155.0f,8.0f};
+            DrawRectangleRec(bar,t.panel);
+            DrawRectangleLinesEx(bar,1,t.line);
+            if(total && bar.width>2) DrawRectangleRec({bar.x+1,bar.y+1,(bar.width-2)*percent/100.0f,bar.height-2},t.accent);
+            DrawText("Esc: cancel",W-45,H-statusH+8,uiFont(10),t.muted);
+        } else {
+            DrawText(st.status.c_str(),10,H-statusH+8,uiFont(13),t.muted);
+        }
 
         if(st.menu.open)drawContextMenu(st,t,W,H);
         if(st.modal!=Modal::None)drawModal(st,W,H,t);
