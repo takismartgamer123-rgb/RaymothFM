@@ -2116,7 +2116,8 @@ static void toggleModeBit(PropertiesState& p, int row, int col) {
     p.mode ^= bits[row][col]; bitsToModeEdit(p);
 }
 
-static bool copyRecursive(const fs::path& src, const fs::path& dst, std::string& error) {
+static bool copyRecursive(const fs::path& src, const fs::path& dst, std::string& error, FileOperationQueue* operation=nullptr) {
+    if (operation && operation->cancelRequested.load()) { error="Cancelled"; return false; }
     std::error_code ec;
     const fs::file_status st = fs::symlink_status(src, ec);
     if (ec) { error = ec.message(); return false; }
@@ -2131,6 +2132,7 @@ static bool copyRecursive(const fs::path& src, const fs::path& dst, std::string&
         if (ec) { error = ec.message(); return false; }
         fs::create_symlink(target, dst, ec);
         if (ec) { error = ec.message(); return false; }
+        if (operation) ++operation->completed;
         return true;
     }
     if (fs::is_directory(st)) {
@@ -2141,17 +2143,36 @@ static bool copyRecursive(const fs::path& src, const fs::path& dst, std::string&
         for (; it != endIt; it.increment(ec)) {
             if (ec) { error = ec.message(); return false; }
             const fs::directory_entry child = *it;
-            if (!copyRecursive(child.path(), dst / child.path().filename(), error)) return false;
+            if (operation && operation->cancelRequested.load()) { error="Cancelled"; return false; }
+            if (!copyRecursive(child.path(), dst / child.path().filename(), error, operation)) return false;
         }
+        if (operation) ++operation->completed;
         return true;
     }
     if (fs::is_regular_file(st)) {
         fs::copy_file(src, dst, fs::copy_options::overwrite_existing, ec);
         if (ec) { error = ec.message(); return false; }
+        if (operation) ++operation->completed;
         return true;
     }
     error = "Unsupported file type: " + src.string();
     return false;
+}
+
+static uint64_t countCopyEntries(const fs::path& root, FileOperationQueue* operation=nullptr) {
+    if (operation && operation->cancelRequested.load()) return 0;
+    std::error_code ec;
+    const fs::file_status status = fs::symlink_status(root,ec);
+    if (ec) return 1;
+    if (!fs::is_directory(status)) return 1;
+    uint64_t total = 1;
+    fs::directory_iterator it(root,fs::directory_options::skip_permission_denied,ec), end;
+    for (; it!=end; it.increment(ec)) {
+        if (operation && operation->cancelRequested.load()) break;
+        if (ec) { ec.clear(); continue; }
+        total += countCopyEntries(it->path(),operation);
+    }
+    return total;
 }
 
 static bool removeRecursive(const fs::path& p, std::string& error) {
