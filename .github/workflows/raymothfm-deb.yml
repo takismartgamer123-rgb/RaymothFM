@@ -212,7 +212,9 @@ jobs:
           cp /tmp/raymothfm-ldd.txt "${output_dir}/ldd.txt"
 
           # Verify the package is installable from the Debian 11 repositories.
-          apt-get install -y --no-install-recommends "./${deb}"
+          relative_deb="dist/${BUILD_ARCH}/$(basename "${deb}")"
+          test -f "${relative_deb}"
+          apt-get install -y --no-install-recommends "./${relative_deb}"
           dpkg-query -W raymothfm
           raymothfm --help
 
