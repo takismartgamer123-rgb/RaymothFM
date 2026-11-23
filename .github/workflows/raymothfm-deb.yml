@@ -110,8 +110,26 @@ jobs:
           MimeType=inode/directory;
           DESKTOP
 
+          # dpkg-shlibdeps expects source-package metadata in debian/control.
+          # Create a minimal temporary control file for dependency resolution only.
+          mkdir -p debian
+          cat > debian/control <<'SOURCE_CONTROL'
+          Source: raymothfm
+          Section: utils
+          Priority: optional
+          Maintainer: RayMothFM contributors <takismartgamer123-rgb@users.noreply.github.com>
+          Standards-Version: 4.6.0
+
+          Package: raymothfm
+          Architecture: any
+          Description: Lightweight graphical file manager
+           RayMothFM is a fast, keyboard-driven Linux file manager built with Raylib.
+          SOURCE_CONTROL
+
           depends="$(dpkg-shlibdeps -O -praymothfm -e"${package_root}/usr/bin/raymothfm" \
             | sed -n 's/^shlibs:Depends=//p' | head -n 1)"
+          rm -rf debian
+
           if [[ -z "${depends}" ]]; then
             echo "Could not determine shared-library dependencies" >&2
             exit 1
