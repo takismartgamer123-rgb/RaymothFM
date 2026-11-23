@@ -2971,12 +2971,15 @@ static void drawModal(ExplorerState& s, int W,int H,const Theme& t) {
     }
 
     if (s.modal==Modal::PasteOverwrite) {
-        DrawText("A file or directory with this name already exists.", (int)box.x+20,(int)box.y+68, uiFont(14), t.text);
-        DrawText(s.pendingPasteDestination.filename().string().c_str(), (int)box.x+20,(int)box.y+98, uiFont(13), t.muted);
-        DrawText("Replace the existing item?", (int)box.x+20,(int)box.y+126, uiFont(13), t.text);
-        Rectangle apply{box.x+360,box.y+180,100,32}, cancel{box.x+470,box.y+180,70,32};
-        DrawRectangleRec(apply,t.accent); DrawText("Overwrite",(int)apply.x+10,(int)apply.y+8, uiFont(12), t.bg);
-        DrawRectangleLinesEx(cancel, 1, t.line); DrawText("Cancel",(int)cancel.x+12,(int)cancel.y+8, uiFont(12), t.text);
+        DrawText("An item with this name already exists.",(int)box.x+20,(int)box.y+68,uiFont(14),t.text);
+        DrawText(s.pendingPasteDestination.filename().string().c_str(),(int)box.x+20,(int)box.y+98,uiFont(13),t.muted);
+        DrawText("Choose what to do. The original is kept until the replacement is ready.",(int)box.x+20,(int)box.y+126,uiFont(12),t.text);
+        Rectangle replace{box.x+20,box.y+180,105,34}, skip{box.x+140,box.y+180,75,34}, keepBoth{box.x+230,box.y+180,110,34}, cancel{box.x+445,box.y+180,85,34};
+        DrawRectangleRec(replace,t.accent); DrawText("Replace",(int)replace.x+23,(int)replace.y+10,uiFont(12),t.bg);
+        DrawRectangleLinesEx(skip,1,t.line); DrawText("Skip",(int)skip.x+23,(int)skip.y+10,uiFont(12),t.text);
+        DrawRectangleLinesEx(keepBoth,1,t.line); DrawText("Keep both",(int)keepBoth.x+16,(int)keepBoth.y+10,uiFont(12),t.text);
+        DrawRectangleLinesEx(cancel,1,t.line); DrawText("Cancel",(int)cancel.x+20,(int)cancel.y+10,uiFont(12),t.text);
+        DrawText("Y = replace    S = skip    K = keep both    Esc = cancel",(int)box.x+20,(int)box.y+245,uiFont(11),t.muted);
         return;
     }
 
@@ -3683,6 +3686,7 @@ int main(int argc, char** argv) {
         if (isCtrlDown() && IsKeyPressed(KEY_Q)) break;
         if (IsKeyPressed(KEY_ESCAPE)) {
             if (st.menu.open) st.menu.open=false;
+            else if (st.modal==Modal::PasteOverwrite) resolvePasteConflict(st,3);
             else if (st.modal!=Modal::None) { if (st.modal==Modal::ConfirmPermanentDelete) st.pendingPermanentDelete.clear(); st.modal=Modal::None; st.modalError.clear(); unfocus(st); }
             else if (st.focusedField!=TextField::None) unfocus(st);
         }
@@ -3801,14 +3805,9 @@ int main(int argc, char** argv) {
         }
 
         if (st.modal==Modal::CreateArchive || st.modal==Modal::ExtractArchive) processArchiveModalInput(st);
-        if (st.modal==Modal::PasteOverwrite && IsKeyPressed(KEY_ENTER)) {
-            if (finishPasteOne(st, st.pendingPasteSource, st.pendingPasteDestination, st.flags.pendingPasteCut, true)) {
-                ++st.pendingPasteIndex;
-                st.modal = Modal::None;
-                unfocus(st);
-                continuePasteClipboard(st);
-            }
-        }
+        if (st.modal==Modal::PasteOverwrite && IsKeyPressed(KEY_Y)) resolvePasteConflict(st,0);
+        else if (st.modal==Modal::PasteOverwrite && IsKeyPressed(KEY_S)) resolvePasteConflict(st,1);
+        else if (st.modal==Modal::PasteOverwrite && IsKeyPressed(KEY_K)) resolvePasteConflict(st,2);
         if (st.modal==Modal::ConfirmPermanentDelete && IsKeyPressed(KEY_ENTER)) applyPermanentDelete(st);
         if (st.modal==Modal::NewItem && IsKeyPressed(KEY_ENTER)) { createNewItem(st); }
         if (st.modal==Modal::ImageView) {
@@ -4288,16 +4287,12 @@ int main(int argc, char** argv) {
             else if(pointIn(cancel,mouse)){ st.pendingPermanentDelete.clear(); st.modal=Modal::None; unfocus(st); }
         }
         if(st.modal==Modal::PasteOverwrite && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)){
-            Rectangle box{W*0.5f-290,H*0.5f-220,580,440}; Rectangle apply{box.x+360,box.y+180,100,32}, cancel{box.x+470,box.y+180,70,32};
-            if(pointIn(apply,mouse)){
-                if (finishPasteOne(st, st.pendingPasteSource, st.pendingPasteDestination, st.flags.pendingPasteCut, true)) {
-                    ++st.pendingPasteIndex;
-                    st.modal = Modal::None;
-                    unfocus(st);
-                    continuePasteClipboard(st);
-                }
-            }
-            else if(pointIn(cancel,mouse)){ st.modal=Modal::None; unfocus(st); }
+            Rectangle box{W*0.5f-290,H*0.5f-220,580,440};
+            Rectangle replace{box.x+20,box.y+180,105,34}, skip{box.x+140,box.y+180,75,34}, keepBoth{box.x+230,box.y+180,110,34}, cancel{box.x+445,box.y+180,85,34};
+            if(pointIn(replace,mouse)) resolvePasteConflict(st,0);
+            else if(pointIn(skip,mouse)) resolvePasteConflict(st,1);
+            else if(pointIn(keepBoth,mouse)) resolvePasteConflict(st,2);
+            else if(pointIn(cancel,mouse)) resolvePasteConflict(st,3);
         }
         if(st.modal==Modal::Properties && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
             const PropertiesLayout pu=propertiesLayout(W,H,st.props.multi);
