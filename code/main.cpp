@@ -4124,8 +4124,21 @@ int main(int argc, char** argv) {
                 }
                 if (IsKeyPressed(KEY_ENTER) && st.modal==Modal::ThemePicker) {
                     const int n=std::atoi(st.themeEdit.c_str());
-                    if(n>=0 && n<(int)kThemes.size()) { st.config.theme=n; applySystemTheme(st.config.systemTheme); if(!st.config.accentCustom) st.config.accent=kThemes[n].accent; st.flags.configDirty=true; st.status="Theme "+std::to_string(n)+": "+kThemes[n].name; st.modal=Modal::None; unfocus(st); }
-                    else st.modalError="Theme must be a number from 0 to "+std::to_string((int)kThemes.size()-1);
+                    if(n>=0 && n<(int)kThemes.size()) {
+                        st.config.theme=n;
+                        applySystemTheme(st.config.systemTheme);
+                        if(!st.config.accentCustom) st.config.accent=kThemes[n].accent;
+                        st.config.editor=st.editorEdit.empty()?"leafpad":st.editorEdit;
+                        st.config.term=st.termEdit.empty()?"gamma-terminal":st.termEdit;
+                        st.config.fontScale=std::clamp(std::strtof(st.fontScaleEdit.c_str(),nullptr),1.0f,2.5f);
+                        gUIFontScale=st.config.fontScale;
+                        st.config.accent=accentFromHSVField(st.accentEdit,st.config.accent);
+                        st.config.accentCustom=true;
+                        st.flags.configDirty=true;
+                        st.status="Settings applied";
+                        st.modal=Modal::None;
+                        unfocus(st);
+                    } else st.modalError="Theme must be a number from 0 to "+std::to_string((int)kThemes.size()-1);
                 }
                 if (IsKeyPressed(KEY_ENTER) && st.modal==Modal::Command) { if(!st.commandEdit.empty()){ if(st.vfs && st.vfs->isLocal() && spawnShellInDir(st.path,st.commandEdit,true)) st.status="Command started"; else st.status="Command requires a local filesystem directory"; st.modal=Modal::None; unfocus(st); } }
                 if (IsKeyPressed(KEY_ENTER) && st.modal==Modal::Rename) applyRename(st);
