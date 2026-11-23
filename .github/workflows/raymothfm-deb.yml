@@ -62,7 +62,7 @@ jobs:
           cat > /etc/apt/sources.list <<'SOURCES'
           deb http://archive.debian.org/debian bullseye main
           deb http://archive.debian.org/debian bullseye-updates main
-          deb [check-valid-until=no] https://snapshot.debian.org/archive/debian-security/20260903T220410Z bullseye-security main
+          deb [check-valid-until=no] http://snapshot.debian.org/archive/debian-security/20260903T220410Z bullseye-security main
           SOURCES
 
           apt-get -o Acquire::Retries=3 update
