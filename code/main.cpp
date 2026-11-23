@@ -446,6 +446,7 @@ struct Config {
     std::string editor = "leafpad";
     std::string term = "gamma-terminal";
     std::vector<std::string> favorites;
+    std::vector<std::string> recents;
     fs::path dir;
     fs::path file;
 };
@@ -575,10 +576,12 @@ static Config loadConfig() {
         else if (key == "editor" || key == "EDITOR") { c.editor = value; if(c.editor.size()>=2 && c.editor.front()=='"' && c.editor.back()=='"') c.editor=c.editor.substr(1,c.editor.size()-2); }
         else if (key == "term" || key == "TERM") { c.term = value; if(c.term.size()>=2 && c.term.front()=='"' && c.term.back()=='"') c.term=c.term.substr(1,c.term.size()-2); }
         else if (key == "favorite" && !value.empty()) c.favorites.push_back(value);
+        else if (key == "recent" && !value.empty()) c.recents.push_back(value);
     }
 
     if (c.editor.empty()) c.editor = "leafpad";
     if (c.term.empty()) c.term = "gamma-terminal";
+    if (c.recents.size() > 8) c.recents.resize(8);
 
     if (c.favorites.empty()) {
         const std::array<std::pair<const char*, const char*>, 5> defaults = {{{"Desktop", "Desktop"}, {"Documents", "Documents"}, {"Downloads", "Downloads"}, {"Music", "Music"}, {"Pictures", "Pictures"}}};
@@ -616,6 +619,15 @@ static void saveConfig(const Config& c, bool allowCreate = false) {
     out << "EDITOR=\"" << c.editor << "\"\n";
     out << "TERM=\"" << c.term << "\"\n";
     for (const auto& f : c.favorites) out << "favorite=" << f << "\n";
+    for (const auto& r : c.recents) out << "recent=" << r << "\n";
+}
+
+static void rememberRecent(Config& c, const fs::path& p) {
+    const std::string value = p.lexically_normal().string();
+    if (value.empty()) return;
+    c.recents.erase(std::remove(c.recents.begin(),c.recents.end(),value),c.recents.end());
+    c.recents.insert(c.recents.begin(),value);
+    if (c.recents.size()>8) c.recents.resize(8);
 }
 
 static bool writeTemplateConfig() {
@@ -1676,9 +1688,16 @@ static void openSelected(ExplorerState& s) {
     const auto rows=selectedRows(s); if (rows.size()!=1) return;
     const auto e=s.rows[rows.front()];
     if (e.kind == EntryKind::Directory) navigate(s,e.path,true);
-    else if (e.kind == EntryKind::Archive && isSingleCompressionFile(e.path)) extractSingleCompressionFile(s,e.path,true);
-    else if (e.kind == EntryKind::Archive) openArchive(s,e.path);
-    else { openExternal(e.path, s.path); s.status = "Opening " + e.name; }
+    else if (e.kind == EntryKind::Archive && isSingleCompressionFile(e.path)) {
+        rememberRecent(s.config,e.path); s.flags.configDirty=true;
+        extractSingleCompressionFile(s,e.path,true);
+    } else if (e.kind == EntryKind::Archive) {
+        rememberRecent(s.config,e.path); s.flags.configDirty=true;
+        openArchive(s,e.path);
+    } else {
+        rememberRecent(s.config,e.path); s.flags.configDirty=true;
+        openExternal(e.path, s.path); s.status = "Opening " + e.name;
+    }
 }
 
 static std::string typeLabel(const VfsEntry& e) {
