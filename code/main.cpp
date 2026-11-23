@@ -16,6 +16,8 @@
 #include <cstdint>
 #include <condition_variable>
 #include <deque>
+#include <exception>
+#include <system_error>
 #include <cctype>
 #include <climits>
 #include <cerrno>
@@ -2768,7 +2770,11 @@ static void openInEditor(ExplorerState& s) {
     const fs::path p=s.rows[ids.front()].path;
     std::error_code ec; if(!fs::is_regular_file(p,ec)) { s.status="Open in editor expects a regular file"; return; }
     const std::string cmd=editorLaunchCommand(s.config.editor,p);
-    if(spawnDetachedShellInDir(fs::path(s.path),cmd)) s.status="Opening in editor: "+p.filename().string();
+    if(spawnDetachedShellInDir(fs::path(s.path),cmd)) {
+        rememberRecent(s.config,p);
+        s.flags.configDirty=true;
+        s.status="Opening in editor: "+p.filename().string();
+    }
 }
 
 
