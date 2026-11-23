@@ -2302,7 +2302,14 @@ static bool startPasteOperation(ExplorerState& s, const fs::path& src, const fs:
     try {
         operation.worker=std::thread([&operation,src,dst,cut,overwrite]() {
             std::string message;
-            const bool success=finishPasteOne(src,dst,cut,overwrite,operation,message);
+            bool success=false;
+            try {
+                success=finishPasteOne(src,dst,cut,overwrite,operation,message);
+            } catch (const std::exception& e) {
+                message=std::string("File operation failed: ")+e.what();
+            } catch (...) {
+                message="File operation failed with an unknown error";
+            }
             {
                 std::lock_guard<std::mutex> lock(operation.resultMutex);
                 operation.error=std::move(message);
@@ -3896,12 +3903,12 @@ int main(int argc, char** argv) {
         if (WindowShouldClose()) break;
         if (isCtrlDown() && IsKeyPressed(KEY_Q)) break;
         if (IsKeyPressed(KEY_ESCAPE)) {
-            if (st.menu.open) st.menu.open=false;
-            else if (st.modal==Modal::PasteOverwrite) resolvePasteConflict(st,3);
-            else if (st.operations.active.load()) {
+            if (st.operations.active.load()) {
                 st.operations.cancelRequested.store(true);
                 st.status="Cancelling file operation...";
             }
+            else if (st.menu.open) st.menu.open=false;
+            else if (st.modal==Modal::PasteOverwrite) resolvePasteConflict(st,3);
             else if (st.modal!=Modal::None) { if (st.modal==Modal::ConfirmPermanentDelete) st.pendingPermanentDelete.clear(); st.modal=Modal::None; st.modalError.clear(); unfocus(st); }
             else if (st.focusedField!=TextField::None) unfocus(st);
         }
