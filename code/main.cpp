@@ -4006,6 +4006,21 @@ int main(int argc, char** argv) {
             Rectangle dataR=drawNavRow("Data", dataHome, rayicons::FolderOpen);
             Rectangle cfgR=drawNavRow("Config", configHome, rayicons::FolderOpen);
             (void)trashR; (void)dataR; (void)cfgR;
+            if (fy+58 < H-statusH && !st.config.recents.empty()) {
+                DrawText("Recent",15,fy+13,uiFont(15),t.accent); fy+=40;
+                const int recentCount=std::min(2,(int)st.config.recents.size());
+                for(int i=0;i<recentCount && fy+24 < H-statusH;++i) {
+                    const fs::path rp=st.config.recents[(size_t)i];
+                    Rectangle rr{8.0f,(float)fy-5,left-16.0f,28};
+                    if(pointIn(rr,mouse)) DrawRectangleRec(rr,t.hover);
+                    rayicons::Draw(rayicons::FileOpen,18,fy,1,t.accent);
+                    std::string label=rp.filename().string();
+                    if(label.empty()) label=rp.string();
+                    if(label.size()>25) label=label.substr(0,22)+"...";
+                    DrawText(label.c_str(),42,fy+3,uiFont(13),t.text);
+                    fy+=29;
+                }
+            }
         }
 
         Rectangle listR{(float)left,(float)top,(float)(W-left),(float)contentH}; DrawRectangleRec(listR,t.bg); DrawLine(left,top,left,H-statusH,t.line);
@@ -4212,7 +4227,23 @@ int main(int argc, char** argv) {
                         fy+=40; Rectangle diskR{8.0f,(float)fy-5,st.sidebarW-16.0f,28}; if(pointIn(diskR,mouse)){openDiskInfo(st);hit=true;} fy+=29; fy+=40;
                         Rectangle xr{8.0f,(float)fy-5,st.sidebarW-16.0f,28}; if(pointIn(xr,mouse)){openLocalPath(st,xdgTrashHome()/"files");hit=true;} fy+=29;
                         Rectangle dr{8.0f,(float)fy-5,st.sidebarW-16.0f,28}; if(pointIn(dr,mouse)){openLocalPath(st,xdgDataHome());hit=true;} fy+=29;
-                        Rectangle cr{8.0f,(float)fy-5,st.sidebarW-16.0f,28}; if(pointIn(cr,mouse)){openLocalPath(st,configBase());hit=true;}
+                        Rectangle cr{8.0f,(float)fy-5,st.sidebarW-16.0f,28}; if(pointIn(cr,mouse)){openLocalPath(st,configBase());hit=true;} fy+=29;
+                        if (fy+58 < H-statusH && !st.config.recents.empty()) {
+                            fy+=40;
+                            const int recentCount=std::min(2,(int)st.config.recents.size());
+                            for(int ri=0;ri<recentCount && !hit && fy+24 < H-statusH;++ri) {
+                                Rectangle recentR{8.0f,(float)fy-5,st.sidebarW-16.0f,28};
+                                if(pointIn(recentR,mouse)) {
+                                    const fs::path recentPath=st.config.recents[(size_t)ri];
+                                    std::error_code recentEc;
+                                    if(fs::is_directory(recentPath,recentEc)) openLocalPath(st,recentPath);
+                                    else if(fs::is_regular_file(recentPath,recentEc)) openExternal(recentPath.string(),recentPath.parent_path().string());
+                                    else st.status="Recent item no longer exists";
+                                    hit=true;
+                                }
+                                fy+=29;
+                            }
+                        }
                     }
                     if(!hit){st.selection.clear();unfocus(st);}
                 } else if(pointIn(listR,mouse)){
