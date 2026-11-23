@@ -3166,13 +3166,56 @@ static void drawModal(ExplorerState& s, int W,int H,const Theme& t) {
     }
 
     if (s.modal==Modal::Help) {
-        DrawText("Navigation",(int)box.x+20,(int)box.y+58, uiFont(15), t.accent);
-        const char* lines[] = {
-            "/                 Focus path (keep text)", "Ctrl+/             Clear + focus path", "Ctrl+L             Focus/select path", "Tab                Complete path/command", "Enter              Open / activate", "Arrow keys         Navigate selection", "PageUp/PageDown    Page through items", "Backspace          Parent directory", "Alt+Left/Right     History", "Ctrl+T/W/Tab        New/close/switch tab",
-            "Ctrl+1..9          Switch tab", "Ctrl+F             Focus search", "Ctrl+H             Show/hide hidden files", "Ctrl+A             Select all", "Ctrl+C/X/V         Copy/cut/paste", "Delete / Shift+Del Trash / permanent delete", "F2                 Rename", "F7 / Ctrl+Shift+N   New directory", "Ctrl+Alt+N          New file", "F6                 cat / text viewer", "F8                 Copy current directory path", "F9                 Open terminal here", "Ctrl+Home          Jump to Home", "A-Z                Focus search and start typing", "Ctrl+Shift+A        Compress", "X                  Extract selected archive", "Ctrl+Wheel          Change view zoom", "1..4               Details/List/Medium/Large", "F3                 Theme picker (0..11)", "`                  Run command here", "Tab                Path/command completion", "F1                 This help", "F4                About", "Config: show_thumbnails=1 + thumbnail_res=1..5 (32/64/128/256/512px); thumbnails use a visible-set-aware bounded cache (96 medium / 48 large).", "Ctrl+Q             Quit", "Esc                Close active window/menu"
+        DrawText("NAVIGATION",(int)box.x+20,(int)box.y+60,uiFont(14),t.accent);
+        DrawText("FILES & TABS",(int)box.x+360,(int)box.y+60,uiFont(14),t.accent);
+        const char* left[] = {
+            "/                 Focus path",
+            "Ctrl+/             Clear and focus path",
+            "Ctrl+L             Focus/select path",
+            "Tab                Complete path / command",
+            "Enter              Open / activate",
+            "Arrow keys         Move selection",
+            "PageUp / PageDown  Page through items",
+            "Backspace          Parent directory",
+            "Alt+Left/Right     Back / forward",
+            "Alt+Up             Parent directory",
+            "Ctrl+Home          Go to Home",
+            "Ctrl+F             Focus search",
+            "Ctrl+H             Toggle hidden files",
+            "A-Z                Start search",
+            "Ctrl+A             Select all",
+            "Space              Quick preview"
         };
-        int y=(int)box.y+86; for(const char* line:lines){ DrawText(line,(int)box.x+20,y, uiFont(12), t.text); y+=14; if(y>box.y+392) break; }
-        DrawText("Details view always shows Name, Date modified, Type and Size.",(int)box.x+20,(int)box.y+402, uiFont(12), t.muted);
+        const char* right[] = {
+            "Ctrl+C / X / V     Copy / cut / paste",
+            "Delete             Move to Trash",
+            "Shift+Delete       Delete permanently",
+            "F2                 Rename",
+            "Ctrl+D             Bookmark this folder",
+            "Ctrl+Shift+D       Remove bookmark",
+            "Ctrl+T / W         New / close tab",
+            "Ctrl+Tab           Next tab",
+            "Ctrl+1..9          Switch tab",
+            "F5 / Ctrl+R        Refresh",
+            "F6                 Text viewer",
+            "F8                 Copy current path",
+            "F9                 Gamma Terminal here",
+            "F3 / Ctrl+,        Settings",
+            "Ctrl+Shift+A       Create archive",
+            "X                  Extract / cut selected",
+            "1..4               Details / List / Icons",
+            "Ctrl+Wheel          Change view zoom",
+            "`                  Run command here",
+            "F1                 Shortcuts",
+            "F4                 About",
+            "Ctrl+Q             Quit"
+        };
+        int y=(int)box.y+88;
+        for(const char* line:left){ DrawText(line,(int)box.x+20,y,uiFont(11),t.text); y+=18; }
+        y=(int)box.y+88;
+        for(const char* line:right){ DrawText(line,(int)box.x+360,y,uiFont(11),t.text); y+=18; }
+        DrawText("Default apps: Leafpad (editor) and Gamma Terminal (terminal)",(int)box.x+20,(int)box.y+455,uiFont(11),t.muted);
+        DrawText("Press Esc to close. Startup guide can be disabled in Settings.",(int)box.x+20,(int)box.y+476,uiFont(11),t.muted);
         return;
     }
     if (s.modal==Modal::About) {
