@@ -581,7 +581,8 @@ static Config loadConfig() {
     }
 
     if (c.editor.empty()) c.editor = "leafpad";
-    if (c.term.empty()) c.term = "gamma-terminal";
+    // Migrate the previous bundled default; explicit non-default commands remain untouched.
+    if (c.term.empty() || c.term == "foot") c.term = "gamma-terminal";
     if (c.recents.size() > 8) c.recents.resize(8);
 
     if (c.favorites.empty()) {
@@ -2180,6 +2181,7 @@ static bool removeRecursive(const fs::path& p, std::string& error) {
 }
 
 static void doCopyOrCut(ExplorerState& s, bool cut) {
+    if (s.operations.active.load()) { s.status="Wait for the current file operation to finish or cancel it with Esc"; return; }
     s.clipboard.paths.clear(); s.clipboard.cut=cut;
     if (!s.vfs || !s.vfs->isLocal()) { s.status="Clipboard operations require a local folder"; return; }
     for (int idx : selectedRows(s)) if (idx>=0 && idx<(int)s.rows.size()) s.clipboard.paths.push_back(s.rows[idx].path);
@@ -3213,7 +3215,7 @@ static void drawModal(ExplorerState& s, int W,int H,const Theme& t) {
         int y=(int)box.y+88;
         for(const char* line:left){ DrawText(line,(int)box.x+20,y,uiFont(11),t.text); y+=18; }
         y=(int)box.y+88;
-        for(const char* line:right){ DrawText(line,(int)box.x+360,y,uiFont(11),t.text); y+=18; }
+        for(const char* line:right){ DrawText(line,(int)box.x+360,y,uiFont(11),t.text); y+=16; }
         DrawText("Default apps: Leafpad (editor) and Gamma Terminal (terminal)",(int)box.x+20,(int)box.y+455,uiFont(11),t.muted);
         DrawText("Press Esc to close. Startup guide can be disabled in Settings.",(int)box.x+20,(int)box.y+476,uiFont(11),t.muted);
         return;
@@ -4280,7 +4282,7 @@ int main(int argc, char** argv) {
             DrawRectangleRec(bar,t.panel);
             DrawRectangleLinesEx(bar,1,t.line);
             if(total && bar.width>2) DrawRectangleRec({bar.x+1,bar.y+1,(bar.width-2)*percent/100.0f,bar.height-2},t.accent);
-            DrawText("Esc: cancel",W-45,H-statusH+8,uiFont(10),t.muted);
+            DrawText("Esc cancel",W-75,H-statusH+8,uiFont(10),t.muted);
         } else {
             DrawText(st.status.c_str(),10,H-statusH+8,uiFont(13),t.muted);
         }
