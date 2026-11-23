@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -794,6 +795,26 @@ struct TabPage {
 };
 
 
+struct FileOperationQueue {
+    std::thread worker;
+    std::atomic_bool active{false};
+    std::atomic_bool cancelRequested{false};
+    std::atomic_bool finished{false};
+    std::atomic_uint64_t completed{0};
+    std::atomic_uint64_t total{0};
+    std::mutex resultMutex;
+    std::string label;
+    std::string error;
+    bool success = false;
+    size_t batchIndex = 0;
+    size_t batchTotal = 0;
+
+    ~FileOperationQueue() {
+        cancelRequested.store(true);
+        if (worker.joinable()) worker.join();
+    }
+};
+
 struct PackedUiFlags {
     uint32_t sidebar:1;
     uint32_t newItemDirectory:1;
@@ -850,6 +871,7 @@ struct ExplorerState {
     ContextMenu menu;
     ClipboardBuffer clipboard;
     Config config;
+    FileOperationQueue operations;
     MagicDatabase magic;
     SortKey sortKey = SortKey::Name;
     std::vector<TabPage> tabs;
