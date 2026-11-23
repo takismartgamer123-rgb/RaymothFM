@@ -87,7 +87,6 @@ make -j$(nproc)
 
 |key|action|
 |------|------|
-|`F1`|Open keyboard shortcuts dialog|
 |`F1`|Open keyboard shortcuts dialog (also shown at startup by default)|
 |`F3` / `Ctrl+,`|Open Settings|
 |`F4`|Open About dialog|
@@ -125,7 +124,7 @@ make -j$(nproc)
 |`Delete`|Move selected items to XDG Trash|
 |`Shift+Delete`|Open permanent-delete confirmation dialog|
 |`Enter`|Open selected item / confirm the active dialog action|
-|`Esc`|Close the active menu/dialog or unfocus the active textbox|
+|`Esc`|Close menus/dialogs, unfocus text fields, or cancel a running copy|
 |`PageUp`|Move selection upward by a page|
 |`PageDown`|Move selection downward by a page|
 |`Home`|Jump to the first item / move textbox cursor to the start|
