@@ -69,6 +69,17 @@ make -j$(nproc)
 `./raymothfm --mkcfg`\
 `cat ~/.config/raymothfm/config`
 
+### Debian packages
+
+GitHub Actions builds separate `.deb` packages on Debian 11 (Bullseye) for
+`amd64` and `i386`. Debian 11 is the minimum compatibility baseline; the
+packages are intended for Debian-based distributions with compatible runtime
+libraries. Raylib and OpenSSL are linked statically, while remaining runtime
+dependencies are recorded in each package.
+
+Download the `raymothfm-deb-*-debian11` artifacts from the repository's
+[GitHub Actions runs](https://github.com/takismartgamer123-rgb/RaymothFM/actions).
+
 # Screenshots
 
 |1|2|
