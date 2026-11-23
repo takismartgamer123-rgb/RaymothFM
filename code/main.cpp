@@ -10,11 +10,14 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <condition_variable>
 #include <deque>
+#include <exception>
+#include <system_error>
 #include <cctype>
 #include <climits>
 #include <cerrno>
@@ -429,8 +432,8 @@ static std::array<Theme, 12> kThemes = {{
 }};
 
 struct Config {
-    int theme = 0;
-    Color accent = kThemes[0].accent;
+    int theme = 6; // Gamma default: Purple.
+    Color accent = kThemes[6].accent;
     bool accentCustom = false;
     bool showHidden = false;
     bool showThumbnails = true;
@@ -438,13 +441,15 @@ struct Config {
     float fontScale = 1.15f;
     bool cursorBeam = true;
     float beamSize = 0.1f; // 0.1 = current/default beam size
+    bool showStartupShortcuts = true;
     std::array<Color, 8> systemTheme{{
         colorHex(0x000000), colorHex(0x000000), colorHex(0x000000), colorHex(0xffffff),
         colorHex(0xc8c8c8), colorHex(0x303030), colorHex(0x111111), colorHex(0xffffff)
     }}; // bg,panel,panel2,text,muted,line,hover,accent
-    std::string editor;
-    std::string term = "foot";
+    std::string editor = "leafpad";
+    std::string term = "gamma-terminal";
     std::vector<std::string> favorites;
+    std::vector<std::string> recents;
     fs::path dir;
     fs::path file;
 };
@@ -569,13 +574,18 @@ static Config loadConfig() {
         else if (key == "font_scale") c.fontScale = std::clamp(std::strtof(value.c_str(), nullptr), 1.0f, 2.5f);
         else if (key == "cursorbeam") c.cursorBeam = std::atoi(value.c_str()) != 0;
         else if (key == "beamsize") c.beamSize = std::clamp(std::strtof(value.c_str(), nullptr), 0.01f, 2.0f);
+        else if (key == "show_startup_shortcuts") c.showStartupShortcuts = std::atoi(value.c_str()) != 0;
         else if (key == "systemtheme" || key == "SYSTEMTHEME") parseSystemTheme(value, c.systemTheme);
         else if (key == "editor" || key == "EDITOR") { c.editor = value; if(c.editor.size()>=2 && c.editor.front()=='"' && c.editor.back()=='"') c.editor=c.editor.substr(1,c.editor.size()-2); }
         else if (key == "term" || key == "TERM") { c.term = value; if(c.term.size()>=2 && c.term.front()=='"' && c.term.back()=='"') c.term=c.term.substr(1,c.term.size()-2); }
         else if (key == "favorite" && !value.empty()) c.favorites.push_back(value);
+        else if (key == "recent" && !value.empty()) c.recents.push_back(value);
     }
 
-    if (c.editor.empty()) { const char* env=std::getenv("EDITOR"); if(env && *env) c.editor=env; }
+    if (c.editor.empty()) c.editor = "leafpad";
+    // Migrate the previous bundled default; explicit non-default commands remain untouched.
+    if (c.term.empty() || c.term == "foot") c.term = "gamma-terminal";
+    if (c.recents.size() > 8) c.recents.resize(8);
 
     if (c.favorites.empty()) {
         const std::array<std::pair<const char*, const char*>, 5> defaults = {{{"Desktop", "Desktop"}, {"Documents", "Documents"}, {"Downloads", "Downloads"}, {"Music", "Music"}, {"Pictures", "Pictures"}}};
@@ -603,6 +613,7 @@ static void saveConfig(const Config& c, bool allowCreate = false) {
     out << "font_scale=" << c.fontScale << "\n";
     out << "cursorbeam=" << (c.cursorBeam ? 1 : 0) << "\n";
     out << "beamsize=" << c.beamSize << "\n";
+    out << "show_startup_shortcuts=" << (c.showStartupShortcuts ? 1 : 0) << "\n";
     out << "systemtheme=";
     for (size_t i = 0; i < c.systemTheme.size(); ++i) {
         if (i) out << ",";
@@ -612,6 +623,15 @@ static void saveConfig(const Config& c, bool allowCreate = false) {
     out << "EDITOR=\"" << c.editor << "\"\n";
     out << "TERM=\"" << c.term << "\"\n";
     for (const auto& f : c.favorites) out << "favorite=" << f << "\n";
+    for (const auto& r : c.recents) out << "recent=" << r << "\n";
+}
+
+static void rememberRecent(Config& c, const fs::path& p) {
+    const std::string value = p.lexically_normal().string();
+    if (value.empty()) return;
+    c.recents.erase(std::remove(c.recents.begin(),c.recents.end(),value),c.recents.end());
+    c.recents.insert(c.recents.begin(),value);
+    if (c.recents.size()>8) c.recents.resize(8);
 }
 
 static bool writeTemplateConfig() {
@@ -625,8 +645,10 @@ static bool writeTemplateConfig() {
         std::fprintf(stderr, "raymothfm: config already exists: %s\n", c.file.c_str());
         return false;
     }
-    c.editor = "";
-    c.term = "foot";
+    c.theme = 6;
+    c.accent = kThemes[6].accent;
+    c.editor = "leafpad";
+    c.term = "gamma-terminal";
     c.fontScale = 1.15f;
     c.cursorBeam = true;
     c.beamSize = 0.1f;
@@ -776,6 +798,26 @@ struct TabPage {
 };
 
 
+struct FileOperationQueue {
+    std::thread worker;
+    std::atomic_bool active{false};
+    std::atomic_bool cancelRequested{false};
+    std::atomic_bool finished{false};
+    std::atomic<uint64_t> completed{0};
+    std::atomic<uint64_t> total{0};
+    std::mutex resultMutex;
+    std::string label;
+    std::string error;
+    bool success = false;
+    size_t batchIndex = 0;
+    size_t batchTotal = 0;
+
+    ~FileOperationQueue() {
+        cancelRequested.store(true);
+        if (worker.joinable()) worker.join();
+    }
+};
+
 struct PackedUiFlags {
     uint32_t sidebar:1;
     uint32_t newItemDirectory:1;
@@ -832,6 +874,7 @@ struct ExplorerState {
     ContextMenu menu;
     ClipboardBuffer clipboard;
     Config config;
+    FileOperationQueue operations;
     MagicDatabase magic;
     SortKey sortKey = SortKey::Name;
     std::vector<TabPage> tabs;
@@ -865,6 +908,7 @@ struct ExplorerState {
     std::unordered_set<std::string> thumbnailProtected;
     fs::path pendingPasteSource;
     fs::path pendingPasteDestination;
+    fs::path pendingPasteDirectory;
     std::vector<fs::path> pendingPermanentDelete;
     size_t pendingPasteIndex = 0;
     std::string convertInput;
@@ -1670,9 +1714,16 @@ static void openSelected(ExplorerState& s) {
     const auto rows=selectedRows(s); if (rows.size()!=1) return;
     const auto e=s.rows[rows.front()];
     if (e.kind == EntryKind::Directory) navigate(s,e.path,true);
-    else if (e.kind == EntryKind::Archive && isSingleCompressionFile(e.path)) extractSingleCompressionFile(s,e.path,true);
-    else if (e.kind == EntryKind::Archive) openArchive(s,e.path);
-    else { openExternal(e.path, s.path); s.status = "Opening " + e.name; }
+    else if (e.kind == EntryKind::Archive && isSingleCompressionFile(e.path)) {
+        rememberRecent(s.config,e.path); s.flags.configDirty=true;
+        extractSingleCompressionFile(s,e.path,true);
+    } else if (e.kind == EntryKind::Archive) {
+        rememberRecent(s.config,e.path); s.flags.configDirty=true;
+        openArchive(s,e.path);
+    } else {
+        rememberRecent(s.config,e.path); s.flags.configDirty=true;
+        openExternal(e.path, s.path); s.status = "Opening " + e.name;
+    }
 }
 
 static std::string typeLabel(const VfsEntry& e) {
@@ -2069,7 +2120,8 @@ static void toggleModeBit(PropertiesState& p, int row, int col) {
     p.mode ^= bits[row][col]; bitsToModeEdit(p);
 }
 
-static bool copyRecursive(const fs::path& src, const fs::path& dst, std::string& error) {
+static bool copyRecursive(const fs::path& src, const fs::path& dst, std::string& error, FileOperationQueue* operation=nullptr) {
+    if (operation && operation->cancelRequested.load()) { error="Cancelled"; return false; }
     std::error_code ec;
     const fs::file_status st = fs::symlink_status(src, ec);
     if (ec) { error = ec.message(); return false; }
@@ -2084,27 +2136,47 @@ static bool copyRecursive(const fs::path& src, const fs::path& dst, std::string&
         if (ec) { error = ec.message(); return false; }
         fs::create_symlink(target, dst, ec);
         if (ec) { error = ec.message(); return false; }
+        if (operation) ++operation->completed;
         return true;
     }
     if (fs::is_directory(st)) {
         fs::create_directories(dst, ec);
         if (ec) { error = ec.message(); return false; }
-        fs::directory_iterator it(src, fs::directory_options::skip_permission_denied, ec), endIt;
+        fs::directory_iterator it(src, fs::directory_options::none, ec), endIt;
         if (ec) { error = ec.message(); return false; }
         for (; it != endIt; it.increment(ec)) {
             if (ec) { error = ec.message(); return false; }
             const fs::directory_entry child = *it;
-            if (!copyRecursive(child.path(), dst / child.path().filename(), error)) return false;
+            if (operation && operation->cancelRequested.load()) { error="Cancelled"; return false; }
+            if (!copyRecursive(child.path(), dst / child.path().filename(), error, operation)) return false;
         }
+        if (operation) ++operation->completed;
         return true;
     }
     if (fs::is_regular_file(st)) {
         fs::copy_file(src, dst, fs::copy_options::overwrite_existing, ec);
         if (ec) { error = ec.message(); return false; }
+        if (operation) ++operation->completed;
         return true;
     }
     error = "Unsupported file type: " + src.string();
     return false;
+}
+
+static uint64_t countCopyEntries(const fs::path& root, FileOperationQueue* operation=nullptr) {
+    if (operation && operation->cancelRequested.load()) return 0;
+    std::error_code ec;
+    const fs::file_status status = fs::symlink_status(root,ec);
+    if (ec) return 1;
+    if (!fs::is_directory(status)) return 1;
+    uint64_t total = 1;
+    fs::directory_iterator it(root,fs::directory_options::skip_permission_denied,ec), end;
+    for (; it!=end; it.increment(ec)) {
+        if (operation && operation->cancelRequested.load()) break;
+        if (ec) { ec.clear(); continue; }
+        total += countCopyEntries(it->path(),operation);
+    }
+    return total;
 }
 
 static bool removeRecursive(const fs::path& p, std::string& error) {
@@ -2112,83 +2184,261 @@ static bool removeRecursive(const fs::path& p, std::string& error) {
 }
 
 static void doCopyOrCut(ExplorerState& s, bool cut) {
+    if (s.operations.active.load()) { s.status="Wait for the current file operation to finish or cancel it with Esc"; return; }
     s.clipboard.paths.clear(); s.clipboard.cut=cut;
     if (!s.vfs || !s.vfs->isLocal()) { s.status="Clipboard operations require a local folder"; return; }
     for (int idx : selectedRows(s)) if (idx>=0 && idx<(int)s.rows.size()) s.clipboard.paths.push_back(s.rows[idx].path);
     s.status = cut ? "Cut " + std::to_string(s.clipboard.paths.size()) + " item(s)" : "Copied " + std::to_string(s.clipboard.paths.size()) + " item(s)";
 }
 
-static bool finishPasteOne(ExplorerState& s, const fs::path& src, const fs::path& dst, bool cut, bool overwrite) {
+static bool finishPasteOne(const fs::path& src, const fs::path& dst, bool cut, bool overwrite,
+                            FileOperationQueue& operation, std::string& message) {
+    if (src == dst) { message = "Source and destination are the same"; return true; }
+    if (operation.cancelRequested.load()) { message = "Cancelled"; return false; }
+
+    std::error_code ec;
+    const fs::file_status destinationStatus = fs::symlink_status(dst,ec);
+    bool destinationExists = false;
+    if (ec == std::errc::no_such_file_or_directory) ec.clear();
+    else if (ec) { message = "Paste failed: " + ec.message(); return false; }
+    else destinationExists = fs::exists(destinationStatus) || fs::is_symlink(destinationStatus);
+    if (destinationExists && !overwrite) { message = "Destination already exists"; return false; }
+
+    static std::atomic<uint64_t> sequence{0};
+    fs::path staged, backup;
+    for (int attempt=0; attempt<16; ++attempt) {
+        const std::string suffix = ".raymothfm-" + std::to_string((long long)getpid()) + "-" +
+                                   std::to_string(++sequence) + "-" + std::to_string(attempt);
+        const fs::path parent=dst.parent_path();
+        staged = parent / (".raymothfm-" + suffix + ".tmp");
+        backup = parent / (".raymothfm-" + suffix + ".bak");
+        std::error_code check;
+        const bool stageExists = fs::exists(staged,check);
+        if (check) continue;
+        const bool backupExists = fs::exists(backup,check);
+        if (!check && !stageExists && !backupExists) break;
+        staged.clear(); backup.clear();
+    }
+    if (staged.empty() || backup.empty()) { message = "Paste failed: cannot allocate a staging name"; return false; }
+
     std::string error;
-    if (cut) {
-        std::error_code ec;
-        if (overwrite && fs::exists(dst, ec)) {
-            fs::remove_all(dst, ec);
-            if (ec) { s.status = "Paste failed: " + ec.message(); return false; }
-        }
-        fs::rename(src, dst, ec);
+    operation.total.store(countCopyEntries(src,&operation));
+    if (operation.total.load()==0) operation.total.store(1);
+    if (!copyRecursive(src,staged,error,&operation)) {
+        std::string ignored; (void)removeRecursive(staged,ignored);
+        message = error=="Cancelled" ? "Paste cancelled" : "Paste failed while preparing replacement: " + error;
+        return false;
+    }
+    if (operation.cancelRequested.load()) {
+        std::string ignored; (void)removeRecursive(staged,ignored);
+        message = "Paste cancelled";
+        return false;
+    }
+
+    bool backedUp = false;
+    if (destinationExists) {
+        fs::rename(dst,backup,ec);
         if (ec) {
-            if (!copyRecursive(src, dst, error) || !removeRecursive(src, error)) {
-                s.status = "Paste failed: " + error;
-                return false;
-            }
+            std::string ignored; (void)removeRecursive(staged,ignored);
+            message = "Paste failed; existing item was not changed: " + ec.message();
+            return false;
         }
-    } else {
-        if (overwrite) {
-            std::error_code ec;
-            if (fs::exists(dst, ec)) {
-                fs::remove_all(dst, ec);
-                if (ec) { s.status = "Paste failed: " + ec.message(); return false; }
-            }
-        }
-        if (!copyRecursive(src, dst, error)) {
-            s.status = "Paste failed: " + error;
+        backedUp = true;
+    }
+
+    if (operation.cancelRequested.load()) {
+        if (backedUp) {
+            std::error_code restoreError; fs::rename(backup,dst,restoreError);
+            if (restoreError) message = "Cancelled; recover original from " + backup.string() + ": " + restoreError.message();
+            else message = "Paste cancelled";
+        } else message = "Paste cancelled";
+        std::string ignored; (void)removeRecursive(staged,ignored);
+        return false;
+    }
+
+    fs::rename(staged,dst,ec);
+    if (ec) {
+        const std::string installError=ec.message();
+        if (backedUp) {
+            std::error_code restoreError; fs::rename(backup,dst,restoreError);
+            if (restoreError) message = "Paste failed; recover original from " + backup.string() + ": " + restoreError.message();
+            else message = "Paste failed; original item restored: " + installError;
+        } else message = "Paste failed: " + installError;
+        std::string ignored; (void)removeRecursive(staged,ignored);
+        return false;
+    }
+
+    if (backedUp) {
+        std::string cleanupError;
+        if (!removeRecursive(backup,cleanupError))
+            message = "Paste completed; previous item remains at " + backup.string() + ": " + cleanupError;
+    }
+    if (cut) {
+        std::string removeError;
+        if (!removeRecursive(src,removeError)) {
+            message = "Copied successfully, but source cleanup failed: " + removeError;
             return false;
         }
     }
     return true;
 }
 
-static void continuePasteClipboard(ExplorerState& s) {
-    if (!s.vfs || !s.vfs->isLocal() || s.clipboard.paths.empty()) return;
-    const fs::path destDir = s.path;
+static bool startPasteOperation(ExplorerState& s, const fs::path& src, const fs::path& dst,
+                                bool cut, bool overwrite) {
+    FileOperationQueue& operation=s.operations;
+    if (operation.active.load()) return false;
+    if (operation.worker.joinable()) operation.worker.join();
 
-    while (s.pendingPasteIndex < s.clipboard.paths.size()) {
-        const fs::path src = s.clipboard.paths[s.pendingPasteIndex];
-        const fs::path dst = destDir / src.filename();
+    operation.cancelRequested.store(false);
+    operation.finished.store(false);
+    operation.completed.store(0);
+    operation.total.store(0);
+    operation.label=src.filename().string();
+    if (operation.label.empty()) operation.label=src.string();
+    operation.error.clear();
+    operation.success=false;
+    operation.batchIndex=s.pendingPasteIndex+1;
+    operation.batchTotal=s.clipboard.paths.size();
+    operation.active.store(true);
+
+    try {
+        operation.worker=std::thread([&operation,src,dst,cut,overwrite]() {
+            std::string message;
+            bool success=false;
+            try {
+                success=finishPasteOne(src,dst,cut,overwrite,operation,message);
+            } catch (const std::exception& e) {
+                message=std::string("File operation failed: ")+e.what();
+            } catch (...) {
+                message="File operation failed with an unknown error";
+            }
+            {
+                std::lock_guard<std::mutex> lock(operation.resultMutex);
+                operation.error=std::move(message);
+                operation.success=success;
+            }
+            operation.finished.store(true);
+        });
+    } catch (const std::exception& e) {
+        operation.active.store(false);
+        operation.error=std::string("Could not start file operation: ")+e.what();
+        return false;
+    }
+    return true;
+}
+
+static void continuePasteClipboard(ExplorerState& s) {
+    if (s.pendingPasteDirectory.empty() || s.clipboard.paths.empty() || s.operations.active.load()) return;
+    const fs::path destDir=s.pendingPasteDirectory;
+
+    while (s.pendingPasteIndex<s.clipboard.paths.size()) {
+        const fs::path src=s.clipboard.paths[s.pendingPasteIndex];
+        const fs::path dst=destDir/src.filename();
         std::error_code ec;
-        if (fs::exists(dst, ec)) {
-            s.pendingPasteSource = src;
-            s.pendingPasteDestination = dst;
-            s.flags.pendingPasteCut = s.clipboard.cut;
-            s.modal = Modal::PasteOverwrite;
-            s.menu.open = false;
+        if (fs::exists(dst,ec) || fs::is_symlink(fs::symlink_status(dst,ec))) {
+            s.pendingPasteSource=src;
+            s.pendingPasteDestination=dst;
+            s.flags.pendingPasteCut=s.clipboard.cut;
+            s.modal=Modal::PasteOverwrite;
+            s.menu.open=false;
             unfocus(s);
             return;
         }
-        if (!finishPasteOne(s, src, dst, s.clipboard.cut, false)) {
-            s.clipboard.paths.clear();
-            s.clipboard.cut = false;
-            s.pendingPasteIndex = 0;
-            refresh(s);
+        if (!startPasteOperation(s,src,dst,s.clipboard.cut,false)) {
+            s.status=s.operations.error.empty()?"Could not start paste operation":s.operations.error;
+            s.clipboard.paths.clear(); s.clipboard.cut=false; s.pendingPasteIndex=0;
+            s.pendingPasteDirectory.clear();
             return;
         }
-        ++s.pendingPasteIndex;
+        return;
     }
 
     s.clipboard.paths.clear();
-    s.clipboard.cut = false;
-    s.pendingPasteIndex = 0;
-    refresh(s);
-    s.status = "Paste complete";
+    s.clipboard.cut=false;
+    s.pendingPasteIndex=0;
+    const bool destinationVisible=fs::path(s.path)==s.pendingPasteDirectory;
+    s.pendingPasteDirectory.clear();
+    if(destinationVisible) refresh(s);
+    s.status="Paste complete";
+}
+
+static fs::path nextCopyName(const fs::path& dst) {
+    const fs::path parent=dst.parent_path();
+    const std::string ext=dst.has_extension()?dst.extension().string():std::string{};
+    const std::string stem=dst.has_extension()?dst.stem().string():dst.filename().string();
+    for(unsigned i=1;i<100000;++i) {
+        const std::string suffix=i==1?" (copy)":" (copy "+std::to_string(i)+")";
+        const fs::path candidate=parent/(stem+suffix+ext);
+        std::error_code ec;
+        if(!fs::exists(candidate,ec) && !ec) return candidate;
+    }
+    return parent/(dst.filename().string()+".copy");
+}
+
+static void resolvePasteConflict(ExplorerState& s, int choice) {
+    if(s.modal!=Modal::PasteOverwrite) return;
+    const fs::path source=s.pendingPasteSource;
+    const fs::path destination=s.pendingPasteDestination;
+    const bool cut=s.flags.pendingPasteCut;
+    s.modal=Modal::None;
+    unfocus(s);
+
+    if(choice==0) {
+        if(!startPasteOperation(s,source,destination,cut,true)) {
+            s.status=s.operations.error.empty()?"Could not start replacement":s.operations.error;
+            s.clipboard.paths.clear(); s.clipboard.cut=false; s.pendingPasteIndex=0; s.pendingPasteDirectory.clear();
+        }
+    } else if(choice==1) {
+        s.status="Skipped: "+destination.filename().string();
+        ++s.pendingPasteIndex;
+        continuePasteClipboard(s);
+    } else if(choice==2) {
+        const fs::path alternate=nextCopyName(destination);
+        if(!startPasteOperation(s,source,alternate,cut,false)) {
+            s.status=s.operations.error.empty()?"Could not start keep-both copy":s.operations.error;
+            s.clipboard.paths.clear(); s.clipboard.cut=false; s.pendingPasteIndex=0; s.pendingPasteDirectory.clear();
+        }
+    } else {
+        s.clipboard.paths.clear(); s.clipboard.cut=false; s.pendingPasteIndex=0; s.pendingPasteDirectory.clear();
+        s.status="Paste cancelled";
+    }
 }
 
 static void pasteClipboard(ExplorerState& s) {
-    if (!s.vfs || !s.vfs->isLocal() || s.clipboard.paths.empty()) return;
-    s.pendingPasteIndex = 0;
+    if(!s.vfs || !s.vfs->isLocal() || s.clipboard.paths.empty()) return;
+    if(s.operations.active.load()) { s.status="A file operation is already running"; return; }
+    s.pendingPasteIndex=0;
+    s.pendingPasteDirectory=fs::path(s.path);
     continuePasteClipboard(s);
 }
 
+static void pollPasteOperation(ExplorerState& s) {
+    FileOperationQueue& operation=s.operations;
+    if(!operation.active.load() || !operation.finished.load()) return;
+    if(operation.worker.joinable()) operation.worker.join();
+
+    bool success=false;
+    std::string message;
+    {
+        std::lock_guard<std::mutex> lock(operation.resultMutex);
+        success=operation.success;
+        message=operation.error;
+    }
+    operation.active.store(false);
+
+    if(!success) {
+        s.status=operation.cancelRequested.load()?"Paste cancelled":(message.empty()?"Paste failed":message);
+        s.clipboard.paths.clear(); s.clipboard.cut=false; s.pendingPasteIndex=0;
+        const bool destinationVisible=fs::path(s.path)==s.pendingPasteDirectory;
+        s.pendingPasteDirectory.clear();
+        if(destinationVisible) refresh(s);
+        return;
+    }
+
+    if(!message.empty()) s.status=message;
+    ++s.pendingPasteIndex;
+    continuePasteClipboard(s);
+}
 
 static bool runCommandPath(const char* cmd, const fs::path& p) {
     pid_t pid = fork();
@@ -2209,6 +2459,7 @@ static bool xdgTrash(const fs::path& p) {
 }
 
 static void openPermanentDeleteConfirm(ExplorerState& s) {
+    if (s.operations.active.load()) { s.status="Wait for the current file operation to finish or cancel it with Esc"; return; }
     if (!s.vfs || !s.vfs->isLocal()) return;
     s.pendingPermanentDelete.clear();
     for (int idx : selectedRows(s)) {
@@ -2222,6 +2473,7 @@ static void openPermanentDeleteConfirm(ExplorerState& s) {
 }
 
 static void applyPermanentDelete(ExplorerState& s) {
+    if (s.operations.active.load()) { s.status="Cannot delete while a file operation is running"; return; }
     if (!s.vfs || !s.vfs->isLocal() || s.pendingPermanentDelete.empty()) return;
     std::string error;
     for (const fs::path& p : s.pendingPermanentDelete) {
@@ -2240,6 +2492,7 @@ static void applyPermanentDelete(ExplorerState& s) {
 }
 
 static void deleteSelection(ExplorerState& s, bool permanent=false) {
+    if (s.operations.active.load()) { s.status="Wait for the current file operation to finish or cancel it with Esc"; return; }
     if (!s.vfs || !s.vfs->isLocal()) return;
     std::string error;
     for (int idx : selectedRows(s)) {
@@ -2410,6 +2663,7 @@ static void startCurrentDirectoryProperties(ExplorerState& s) {
 }
 
 static void startRename(ExplorerState& s) {
+    if (s.operations.active.load()) { s.status="Wait for the current file operation to finish or cancel it with Esc"; return; }
     const auto ids=selectedRows(s); if (ids.size()!=1 || !s.vfs || !s.vfs->isLocal()) return;
     s.renameEdit=s.rows[ids.front()].name; s.modal=Modal::Rename; s.modalError.clear(); focus(s,TextField::Rename,true); s.menu.open=false;
 }
@@ -2516,7 +2770,11 @@ static void openInEditor(ExplorerState& s) {
     const fs::path p=s.rows[ids.front()].path;
     std::error_code ec; if(!fs::is_regular_file(p,ec)) { s.status="Open in editor expects a regular file"; return; }
     const std::string cmd=editorLaunchCommand(s.config.editor,p);
-    if(spawnDetachedShellInDir(fs::path(s.path),cmd)) s.status="Opening in editor: "+p.filename().string();
+    if(spawnDetachedShellInDir(fs::path(s.path),cmd)) {
+        rememberRecent(s.config,p);
+        s.flags.configDirty=true;
+        s.status="Opening in editor: "+p.filename().string();
+    }
 }
 
 
@@ -2856,7 +3114,7 @@ static void drawModal(ExplorerState& s, int W,int H,const Theme& t) {
     const float dialogH = largeDialog ? 560.0f : (largeProperties ? 560.0f : 440.0f);
     Rectangle box{W*0.5f-dialogW*0.5f,H*0.5f-dialogH*0.5f,dialogW,dialogH};
     DrawRectangleRec(box,t.panel2); DrawRectangleLinesEx(box, 1, t.line);
-    const std::string title = s.modal==Modal::Properties?"Properties":s.modal==Modal::DiskInfo?"Disk usage":s.modal==Modal::Rename?"Rename":s.modal==Modal::NewItem?(s.flags.newItemDirectory?"New directory":"New file"):s.modal==Modal::CreateArchive?"Create archive":s.modal==Modal::ExtractArchive?"Extract archive":s.modal==Modal::ConvertImage?"Convert image":s.modal==Modal::Command?"Run command here":s.modal==Modal::Help?"Keyboard shortcuts":s.modal==Modal::About?"About raymothfm":s.modal==Modal::ThemePicker?"Theme picker":s.modal==Modal::PasteOverwrite?"Confirm overwrite":s.modal==Modal::ConfirmPermanentDelete?"Permanent delete":s.modal==Modal::Checksum?"Checksum":"raymothfm";
+    const std::string title = s.modal==Modal::Properties?"Properties":s.modal==Modal::DiskInfo?"Disk usage":s.modal==Modal::Rename?"Rename":s.modal==Modal::NewItem?(s.flags.newItemDirectory?"New directory":"New file"):s.modal==Modal::CreateArchive?"Create archive":s.modal==Modal::ExtractArchive?"Extract archive":s.modal==Modal::ConvertImage?"Convert image":s.modal==Modal::Command?"Run command here":s.modal==Modal::Help?"Keyboard shortcuts":s.modal==Modal::About?"About raymothfm":s.modal==Modal::ThemePicker?"Settings":s.modal==Modal::PasteOverwrite?"Confirm overwrite":s.modal==Modal::ConfirmPermanentDelete?"Permanent delete":s.modal==Modal::Checksum?"Checksum":"raymothfm";
     DrawText(title.c_str(),(int)box.x+20,(int)box.y+18, uiFont(20), t.text);
 
 
@@ -2892,17 +3150,20 @@ static void drawModal(ExplorerState& s, int W,int H,const Theme& t) {
     }
 
     if (s.modal==Modal::PasteOverwrite) {
-        DrawText("A file or directory with this name already exists.", (int)box.x+20,(int)box.y+68, uiFont(14), t.text);
-        DrawText(s.pendingPasteDestination.filename().string().c_str(), (int)box.x+20,(int)box.y+98, uiFont(13), t.muted);
-        DrawText("Replace the existing item?", (int)box.x+20,(int)box.y+126, uiFont(13), t.text);
-        Rectangle apply{box.x+360,box.y+180,100,32}, cancel{box.x+470,box.y+180,70,32};
-        DrawRectangleRec(apply,t.accent); DrawText("Overwrite",(int)apply.x+10,(int)apply.y+8, uiFont(12), t.bg);
-        DrawRectangleLinesEx(cancel, 1, t.line); DrawText("Cancel",(int)cancel.x+12,(int)cancel.y+8, uiFont(12), t.text);
+        DrawText("An item with this name already exists.",(int)box.x+20,(int)box.y+68,uiFont(14),t.text);
+        DrawText(s.pendingPasteDestination.filename().string().c_str(),(int)box.x+20,(int)box.y+98,uiFont(13),t.muted);
+        DrawText("Choose what to do. The original is kept until the replacement is ready.",(int)box.x+20,(int)box.y+126,uiFont(12),t.text);
+        Rectangle replace{box.x+20,box.y+180,105,34}, skip{box.x+140,box.y+180,75,34}, keepBoth{box.x+230,box.y+180,110,34}, cancel{box.x+445,box.y+180,85,34};
+        DrawRectangleRec(replace,t.accent); DrawText("Replace",(int)replace.x+23,(int)replace.y+10,uiFont(12),t.bg);
+        DrawRectangleLinesEx(skip,1,t.line); DrawText("Skip",(int)skip.x+23,(int)skip.y+10,uiFont(12),t.text);
+        DrawRectangleLinesEx(keepBoth,1,t.line); DrawText("Keep both",(int)keepBoth.x+16,(int)keepBoth.y+10,uiFont(12),t.text);
+        DrawRectangleLinesEx(cancel,1,t.line); DrawText("Cancel",(int)cancel.x+20,(int)cancel.y+10,uiFont(12),t.text);
+        DrawText("Y = replace    S = skip    K = keep both    Esc = cancel",(int)box.x+20,(int)box.y+245,uiFont(11),t.muted);
         return;
     }
 
     if (s.modal==Modal::ThemePicker) {
-        DrawText("Theme / Appearance",(int)box.x+20,(int)box.y+50, uiFont(15), t.accent);
+        DrawText("Settings - appearance and default applications",(int)box.x+20,(int)box.y+50, uiFont(15), t.accent);
         auto field=[&](Rectangle rr,const char* label,TextField tf,const std::string& value){
             DrawText(label,(int)rr.x,(int)rr.y-16,uiFont(10),t.muted);
             DrawRectangleRec(rr,t.bg); DrawRectangleLinesEx(rr,1,s.focusedField==tf?t.accent:t.line);
@@ -2913,13 +3174,17 @@ static void drawModal(ExplorerState& s, int W,int H,const Theme& t) {
             }
         };
         field({box.x+20,box.y+92,150,34},"Theme number (0-11)",TextField::ThemeNumber,s.themeEdit);
-        field({box.x+20,box.y+152,270,34},"EDITOR",TextField::EditorConfig,s.editorEdit);
-        field({box.x+20,box.y+212,270,34},"TERM",TextField::TermConfig,s.termEdit);
+        field({box.x+20,box.y+152,270,34},"Text editor command",TextField::EditorConfig,s.editorEdit);
+        field({box.x+20,box.y+212,270,34},"Terminal command",TextField::TermConfig,s.termEdit);
         field({box.x+20,box.y+272,170,34},"Font scale (1.0-2.5)",TextField::FontScale,s.fontScaleEdit);
         field({box.x+200,box.y+272,170,34},"Accent #RRGGBB",TextField::AccentConfig,s.accentEdit);
         Rectangle hsvBtn{box.x+380,box.y+272,62,34}; DrawRectangleRec(hsvBtn,t.panel); DrawRectangleLinesEx(hsvBtn,1,t.accent); DrawText("HSV",(int)hsvBtn.x+17,(int)hsvBtn.y+9,uiFont(11),t.text);
         DrawText("Themes",(int)box.x+330,(int)box.y+76,uiFont(12),t.muted);
         int yy=(int)box.y+100; for(int i=0;i<(int)kThemes.size();++i){ Color c=(i==s.config.theme)?t.accent:t.text; DrawText((std::to_string(i)+"  "+kThemes[i].name).c_str(),(int)box.x+330,yy,uiFont(10),c); yy+=17; }
+        drawCheckbox({box.x+20,box.y+318,14,14},s.config.showHidden,"Hidden files",t.text,t.accent);
+        drawCheckbox({box.x+150,box.y+318,14,14},s.config.showThumbnails,"Thumbnails",t.text,t.accent);
+        drawCheckbox({box.x+285,box.y+318,14,14},s.config.cursorBeam,"Cursor trail",t.text,t.accent);
+        drawCheckbox({box.x+420,box.y+318,14,14},s.config.showStartupShortcuts,"Startup guide",t.text,t.accent);
         Rectangle apply{box.x+390,box.y+360,85,32},cancel{box.x+485,box.y+360,65,32};
         DrawRectangleRec(apply,t.panel); DrawRectangleLinesEx(apply,1,t.accent); DrawText("Apply",(int)apply.x+20,(int)apply.y+9,uiFont(13),t.text);
         DrawRectangleRec(cancel,t.panel); DrawRectangleLinesEx(cancel,1,t.line); DrawText("Cancel",(int)cancel.x+10,(int)cancel.y+9,uiFont(13),t.text);
@@ -2928,13 +3193,56 @@ static void drawModal(ExplorerState& s, int W,int H,const Theme& t) {
     }
 
     if (s.modal==Modal::Help) {
-        DrawText("Navigation",(int)box.x+20,(int)box.y+58, uiFont(15), t.accent);
-        const char* lines[] = {
-            "/                 Focus path (keep text)", "Ctrl+/             Clear + focus path", "Ctrl+L             Focus/select path", "Tab                Complete path/command", "Enter              Open / activate", "Arrow keys         Navigate selection", "PageUp/PageDown    Page through items", "Backspace          Parent directory", "Alt+Left/Right     History", "Ctrl+T/W/Tab        New/close/switch tab",
-            "Ctrl+1..9          Switch tab", "Ctrl+F             Focus search", "Ctrl+H             Show/hide hidden files", "Ctrl+A             Select all", "Ctrl+C/X/V         Copy/cut/paste", "Delete / Shift+Del Trash / permanent delete", "F2                 Rename", "F7 / Ctrl+Shift+N   New directory", "Ctrl+Alt+N          New file", "F6                 cat / text viewer", "F8                 Copy current directory path", "F9                 Open terminal here", "Ctrl+Home          Jump to Home", "A-Z                Focus search and start typing", "Ctrl+Shift+A        Compress", "X                  Extract selected archive", "Ctrl+Wheel          Change view zoom", "1..4               Details/List/Medium/Large", "F3                 Theme picker (0..11)", "`                  Run command here", "Tab                Path/command completion", "F1                 This help", "F4                About", "Config: show_thumbnails=1 + thumbnail_res=1..5 (32/64/128/256/512px); thumbnails use a visible-set-aware bounded cache (96 medium / 48 large).", "Ctrl+Q             Quit", "Esc                Close active window/menu"
+        DrawText("NAVIGATION",(int)box.x+20,(int)box.y+60,uiFont(14),t.accent);
+        DrawText("FILES & TABS",(int)box.x+360,(int)box.y+60,uiFont(14),t.accent);
+        const char* left[] = {
+            "/                 Focus path",
+            "Ctrl+/             Clear and focus path",
+            "Ctrl+L             Focus/select path",
+            "Tab                Complete path / command",
+            "Enter              Open / activate",
+            "Arrow keys         Move selection",
+            "PageUp / PageDown  Page through items",
+            "Backspace          Parent directory",
+            "Alt+Left/Right     Back / forward",
+            "Alt+Up             Parent directory",
+            "Ctrl+Home          Go to Home",
+            "Ctrl+F             Focus search",
+            "Ctrl+H             Toggle hidden files",
+            "A-Z                Start search",
+            "Ctrl+A             Select all",
+            "Space              Quick preview"
         };
-        int y=(int)box.y+86; for(const char* line:lines){ DrawText(line,(int)box.x+20,y, uiFont(12), t.text); y+=14; if(y>box.y+392) break; }
-        DrawText("Details view always shows Name, Date modified, Type and Size.",(int)box.x+20,(int)box.y+402, uiFont(12), t.muted);
+        const char* right[] = {
+            "Ctrl+C / X / V     Copy / cut / paste",
+            "Delete             Move to Trash",
+            "Shift+Delete       Delete permanently",
+            "F2                 Rename",
+            "Ctrl+D             Bookmark this folder",
+            "Ctrl+Shift+D       Remove bookmark",
+            "Ctrl+T / W         New / close tab",
+            "Ctrl+Tab           Next tab",
+            "Ctrl+1..9          Switch tab",
+            "F5 / Ctrl+R        Refresh",
+            "F6                 Text viewer",
+            "F8                 Copy current path",
+            "F9                 Gamma Terminal here",
+            "F3 / Ctrl+,        Settings",
+            "Ctrl+Shift+A       Create archive",
+            "X                  Extract / cut selected",
+            "1..4               Details / List / Icons",
+            "Ctrl+Wheel          Change view zoom",
+            "`                  Run command here",
+            "F1                 Shortcuts",
+            "F4                 About",
+            "Ctrl+Q             Quit"
+        };
+        int y=(int)box.y+88;
+        for(const char* line:left){ DrawText(line,(int)box.x+20,y,uiFont(11),t.text); y+=18; }
+        y=(int)box.y+88;
+        for(const char* line:right){ DrawText(line,(int)box.x+360,y,uiFont(11),t.text); y+=16; }
+        DrawText("Default apps: Leafpad (editor) and Gamma Terminal (terminal)",(int)box.x+20,(int)box.y+455,uiFont(11),t.muted);
+        DrawText("Press Esc to close. Startup guide can be disabled in Settings.",(int)box.x+20,(int)box.y+476,uiFont(11),t.muted);
         return;
     }
     if (s.modal==Modal::About) {
@@ -3572,7 +3880,7 @@ int main(int argc, char** argv) {
     st.flags.cursorBeam = st.config.cursorBeam;
     if (st.flags.cursorBeam) HideCursor(); else ShowCursor();
     gUIFontScale = st.config.fontScale;
-    st.config.accent = st.config.accent.a == 0 ? kThemes[st.config.theme].accent : st.config.accent;
+    if (!st.config.accentCustom) st.config.accent = kThemes[st.config.theme].accent;
 
     fs::path start=homeDir();
     openLocalPath(st,start);
@@ -3580,25 +3888,33 @@ int main(int argc, char** argv) {
     st.tabs.resize(1);
     st.tabs[0] = saveTabSnapshot(st);
     restoreTabSnapshot(st,std::move(st.tabs[0]));
+    if (st.config.showStartupShortcuts) openHelp(st);
 
     for (;;) {
         pumpThumbnailResults(st);
+        pollPasteOperation(st);
         const bool navigationHeld =
             st.focusedField == TextField::None &&
             (IsKeyDown(KEY_UP) || IsKeyDown(KEY_DOWN) || IsKeyDown(KEY_LEFT) ||
              IsKeyDown(KEY_RIGHT) || IsKeyDown(KEY_PAGE_UP) || IsKeyDown(KEY_PAGE_DOWN) ||
              IsKeyDown(KEY_HOME) || IsKeyDown(KEY_END));
         const bool thumbBusy = thumbnailWorker.hasPendingWork();
+        const bool operationBusy = st.operations.active.load();
         const double frameNow = GetTime();
         const bool mouseBeamAnimating = st.flags.cursorBeam && mouseLaser.active(frameNow);
-        if (thumbBusy || navigationHeld || mouseBeamAnimating) {
+        if (thumbBusy || operationBusy || navigationHeld || mouseBeamAnimating) {
             DisableEventWaiting();
-            if (thumbBusy && !navigationHeld && !mouseBeamAnimating) WaitTime(0.004);
+            if ((thumbBusy || operationBusy) && !navigationHeld && !mouseBeamAnimating) WaitTime(0.004);
         } else EnableEventWaiting();
         if (WindowShouldClose()) break;
         if (isCtrlDown() && IsKeyPressed(KEY_Q)) break;
         if (IsKeyPressed(KEY_ESCAPE)) {
-            if (st.menu.open) st.menu.open=false;
+            if (st.operations.active.load()) {
+                st.operations.cancelRequested.store(true);
+                st.status="Cancelling file operation...";
+            }
+            else if (st.menu.open) st.menu.open=false;
+            else if (st.modal==Modal::PasteOverwrite) resolvePasteConflict(st,3);
             else if (st.modal!=Modal::None) { if (st.modal==Modal::ConfirmPermanentDelete) st.pendingPermanentDelete.clear(); st.modal=Modal::None; st.modalError.clear(); unfocus(st); }
             else if (st.focusedField!=TextField::None) unfocus(st);
         }
@@ -3625,7 +3941,7 @@ int main(int argc, char** argv) {
             }
             if (IsKeyPressed(KEY_F1)) openHelp(st);
             if (IsKeyPressed(KEY_F4)) openAbout(st);
-            if (IsKeyPressed(KEY_F3)) {
+            if (IsKeyPressed(KEY_F3) || (isCtrlDown() && IsKeyPressed(KEY_COMMA))) {
     st.themeEdit=std::to_string(st.config.theme); st.editorEdit=st.config.editor; st.termEdit=st.config.term; st.accentEdit=hexRGB(st.config.accent); st.fontScaleEdit=std::to_string(st.config.fontScale);
     st.modal=Modal::ThemePicker; focus(st,TextField::ThemeNumber,false); st.menu.open=false;
 }
@@ -3635,6 +3951,20 @@ int main(int argc, char** argv) {
             if (isCtrlDown() && IsKeyPressed(KEY_W)) closeActiveTab(st);
             if (isCtrlDown() && IsKeyPressed(KEY_TAB)) activateTab(st,isShiftDown()?st.activeTab-1:st.activeTab+1);
             if (isCtrlDown() && IsKeyPressed(KEY_H)) { st.config.showHidden=!st.config.showHidden; refresh(st); st.flags.configDirty=true; st.status=st.config.showHidden?"Hidden files shown":"Hidden files hidden"; }
+            if (isCtrlDown() && IsKeyPressed(KEY_D) && st.focusedField==TextField::None && st.vfs && st.vfs->isLocal()) {
+                const auto bookmark=std::find(st.config.favorites.begin(),st.config.favorites.end(),st.path);
+                if (isShiftDown()) {
+                    if (bookmark!=st.config.favorites.end()) {
+                        st.config.favorites.erase(bookmark);
+                        st.status="Bookmark removed";
+                        st.flags.configDirty=true;
+                    } else st.status="This folder is not bookmarked";
+                } else if (bookmark==st.config.favorites.end()) {
+                    st.config.favorites.push_back(st.path);
+                    st.status="Bookmarked: "+fs::path(st.path).filename().string();
+                    st.flags.configDirty=true;
+                } else st.status="Folder is already bookmarked";
+            }
             for (int k=0;k<9;++k) if (isCtrlDown() && IsKeyPressed(KEY_ONE+k) && k<(int)st.tabs.size()) activateTab(st,k);
             if (IsKeyPressed(KEY_F5) || (isCtrlDown() && IsKeyPressed(KEY_R))) refresh(st);
             if (IsKeyPressed(KEY_F8) && st.focusedField==TextField::None) {
@@ -3683,6 +4013,13 @@ int main(int argc, char** argv) {
             if (isCtrlDown() && IsKeyPressed(KEY_A) && st.focusedField==TextField::None) selectAll(st);
             if (IsKeyPressed(KEY_F2) && st.focusedField==TextField::None) startRename(st);
             if (IsKeyPressed(KEY_F6) && st.focusedField==TextField::None) openCat(st);
+            if (IsKeyPressed(KEY_SPACE) && st.focusedField==TextField::None) {
+                const auto ids=selectedRows(st);
+                if (ids.size()==1 && st.rows[ids.front()].kind!=EntryKind::Directory) {
+                    if (isImagePath(st.rows[ids.front()].name)) openImageViewer(st);
+                    else openCat(st);
+                }
+            }
             if (isCtrlDown() && isShiftDown() && IsKeyPressed(KEY_A) && st.focusedField==TextField::None) openCreateArchive(st);
             if (isCtrlDown() && isShiftDown() && IsKeyPressed(KEY_N) && st.focusedField==TextField::None) openNewItem(st, true);
             if (isCtrlDown() && isAltDown() && IsKeyPressed(KEY_N) && st.focusedField==TextField::None) openNewItem(st, false);
@@ -3696,14 +4033,9 @@ int main(int argc, char** argv) {
         }
 
         if (st.modal==Modal::CreateArchive || st.modal==Modal::ExtractArchive) processArchiveModalInput(st);
-        if (st.modal==Modal::PasteOverwrite && IsKeyPressed(KEY_ENTER)) {
-            if (finishPasteOne(st, st.pendingPasteSource, st.pendingPasteDestination, st.flags.pendingPasteCut, true)) {
-                ++st.pendingPasteIndex;
-                st.modal = Modal::None;
-                unfocus(st);
-                continuePasteClipboard(st);
-            }
-        }
+        if (st.modal==Modal::PasteOverwrite && IsKeyPressed(KEY_Y)) resolvePasteConflict(st,0);
+        else if (st.modal==Modal::PasteOverwrite && IsKeyPressed(KEY_S)) resolvePasteConflict(st,1);
+        else if (st.modal==Modal::PasteOverwrite && IsKeyPressed(KEY_K)) resolvePasteConflict(st,2);
         if (st.modal==Modal::ConfirmPermanentDelete && IsKeyPressed(KEY_ENTER)) applyPermanentDelete(st);
         if (st.modal==Modal::NewItem && IsKeyPressed(KEY_ENTER)) { createNewItem(st); }
         if (st.modal==Modal::ImageView) {
@@ -3792,8 +4124,21 @@ int main(int argc, char** argv) {
                 }
                 if (IsKeyPressed(KEY_ENTER) && st.modal==Modal::ThemePicker) {
                     const int n=std::atoi(st.themeEdit.c_str());
-                    if(n>=0 && n<(int)kThemes.size()) { st.config.theme=n; applySystemTheme(st.config.systemTheme); if(!st.config.accentCustom) st.config.accent=kThemes[n].accent; st.flags.configDirty=true; st.status="Theme "+std::to_string(n)+": "+kThemes[n].name; st.modal=Modal::None; unfocus(st); }
-                    else st.modalError="Theme must be a number from 0 to "+std::to_string((int)kThemes.size()-1);
+                    if(n>=0 && n<(int)kThemes.size()) {
+                        st.config.theme=n;
+                        applySystemTheme(st.config.systemTheme);
+                        if(!st.config.accentCustom) st.config.accent=kThemes[n].accent;
+                        st.config.editor=st.editorEdit.empty()?"leafpad":st.editorEdit;
+                        st.config.term=st.termEdit.empty()?"gamma-terminal":st.termEdit;
+                        st.config.fontScale=std::clamp(std::strtof(st.fontScaleEdit.c_str(),nullptr),1.0f,2.5f);
+                        gUIFontScale=st.config.fontScale;
+                        st.config.accent=accentFromHSVField(st.accentEdit,st.config.accent);
+                        st.config.accentCustom=true;
+                        st.flags.configDirty=true;
+                        st.status="Settings applied";
+                        st.modal=Modal::None;
+                        unfocus(st);
+                    } else st.modalError="Theme must be a number from 0 to "+std::to_string((int)kThemes.size()-1);
                 }
                 if (IsKeyPressed(KEY_ENTER) && st.modal==Modal::Command) { if(!st.commandEdit.empty()){ if(st.vfs && st.vfs->isLocal() && spawnShellInDir(st.path,st.commandEdit,true)) st.status="Command started"; else st.status="Command requires a local filesystem directory"; st.modal=Modal::None; unfocus(st); } }
                 if (IsKeyPressed(KEY_ENTER) && st.modal==Modal::Rename) applyRename(st);
@@ -3883,6 +4228,21 @@ int main(int argc, char** argv) {
             Rectangle dataR=drawNavRow("Data", dataHome, rayicons::FolderOpen);
             Rectangle cfgR=drawNavRow("Config", configHome, rayicons::FolderOpen);
             (void)trashR; (void)dataR; (void)cfgR;
+            if (fy+58 < H-statusH && !st.config.recents.empty()) {
+                DrawText("Recent",15,fy+13,uiFont(15),t.accent); fy+=40;
+                const int recentCount=std::min(2,(int)st.config.recents.size());
+                for(int i=0;i<recentCount && fy+24 < H-statusH;++i) {
+                    const fs::path rp=st.config.recents[(size_t)i];
+                    Rectangle rr{8.0f,(float)fy-5,left-16.0f,28};
+                    if(pointIn(rr,mouse)) DrawRectangleRec(rr,t.hover);
+                    rayicons::Draw(rayicons::FileOpen,18,fy,1,t.accent);
+                    std::string label=rp.filename().string();
+                    if(label.empty()) label=rp.string();
+                    if(label.size()>25) label=label.substr(0,22)+"...";
+                    DrawText(label.c_str(),42,fy+3,uiFont(13),t.text);
+                    fy+=29;
+                }
+            }
         }
 
         Rectangle listR{(float)left,(float)top,(float)(W-left),(float)contentH}; DrawRectangleRec(listR,t.bg); DrawLine(left,top,left,H-statusH,t.line);
@@ -3946,8 +4306,25 @@ int main(int argc, char** argv) {
             if(x2>x1 && y2>y1){Rectangle rr{x1,y1,x2-x1,y2-y1};DrawRectangleRec(rr,Fade(t.accent,0.16f));DrawRectangleLinesEx(rr,1.0f,t.accent);}
         }
 
-        // Status bar
-        DrawRectangle(0,H-statusH,W,statusH,t.panel2); DrawLine(0,H-statusH,W,H-statusH,t.line); DrawText(st.status.c_str(), 10, H-statusH+8, uiFont(13), t.muted);
+        // Status bar / file operation progress
+        DrawRectangle(0,H-statusH,W,statusH,t.panel2);
+        DrawLine(0,H-statusH,W,H-statusH,t.line);
+        if (st.operations.active.load()) {
+            const uint64_t total=st.operations.total.load();
+            const uint64_t done=st.operations.completed.load();
+            const int percent=total?std::clamp((int)(100.0*std::min(done,total)/total),0,100):0;
+            std::string label="Copying "+st.operations.label+" ("+std::to_string(st.operations.batchIndex)+"/"+std::to_string(st.operations.batchTotal)+")";
+            if(total) label+="  "+std::to_string(done)+"/"+std::to_string(total)+"  "+std::to_string(percent)+"%";
+            else label+="  Preparing...";
+            DrawText(label.c_str(),10,H-statusH+8,uiFont(12),t.text);
+            Rectangle bar{(float)W-260.0f,(float)H-statusH+11.0f,160.0f,8.0f};
+            DrawRectangleRec(bar,t.panel);
+            DrawRectangleLinesEx(bar,1,t.line);
+            if(total && bar.width>2) DrawRectangleRec({bar.x+1,bar.y+1,(bar.width-2)*percent/100.0f,bar.height-2},t.accent);
+            DrawText("Esc cancel",W-82,H-statusH+8,uiFont(10),t.muted);
+        } else {
+            DrawText(st.status.c_str(),10,H-statusH+8,uiFont(13),t.muted);
+        }
 
         if(st.menu.open)drawContextMenu(st,t,W,H);
         if(st.modal!=Modal::None)drawModal(st,W,H,t);
@@ -4089,7 +4466,23 @@ int main(int argc, char** argv) {
                         fy+=40; Rectangle diskR{8.0f,(float)fy-5,st.sidebarW-16.0f,28}; if(pointIn(diskR,mouse)){openDiskInfo(st);hit=true;} fy+=29; fy+=40;
                         Rectangle xr{8.0f,(float)fy-5,st.sidebarW-16.0f,28}; if(pointIn(xr,mouse)){openLocalPath(st,xdgTrashHome()/"files");hit=true;} fy+=29;
                         Rectangle dr{8.0f,(float)fy-5,st.sidebarW-16.0f,28}; if(pointIn(dr,mouse)){openLocalPath(st,xdgDataHome());hit=true;} fy+=29;
-                        Rectangle cr{8.0f,(float)fy-5,st.sidebarW-16.0f,28}; if(pointIn(cr,mouse)){openLocalPath(st,configBase());hit=true;}
+                        Rectangle cr{8.0f,(float)fy-5,st.sidebarW-16.0f,28}; if(pointIn(cr,mouse)){openLocalPath(st,configBase());hit=true;} fy+=29;
+                        if (fy+58 < H-statusH && !st.config.recents.empty()) {
+                            fy+=40;
+                            const int recentCount=std::min(2,(int)st.config.recents.size());
+                            for(int ri=0;ri<recentCount && !hit && fy+24 < H-statusH;++ri) {
+                                Rectangle recentR{8.0f,(float)fy-5,st.sidebarW-16.0f,28};
+                                if(pointIn(recentR,mouse)) {
+                                    const fs::path recentPath=st.config.recents[(size_t)ri];
+                                    std::error_code recentEc;
+                                    if(fs::is_directory(recentPath,recentEc)) openLocalPath(st,recentPath);
+                                    else if(fs::is_regular_file(recentPath,recentEc)) openExternal(recentPath.string(),recentPath.parent_path().string());
+                                    else st.status="Recent item no longer exists";
+                                    hit=true;
+                                }
+                                fy+=29;
+                            }
+                        }
                     }
                     if(!hit){st.selection.clear();unfocus(st);}
                 } else if(pointIn(listR,mouse)){
@@ -4133,16 +4526,23 @@ int main(int argc, char** argv) {
         if(st.modal==Modal::ThemePicker && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
             Rectangle box{W*0.5f-290,H*0.5f-220,580,440};
             Rectangle themeF{box.x+20,box.y+92,150,34}, editorF{box.x+20,box.y+152,270,34}, termF{box.x+20,box.y+212,270,34}, fontF{box.x+20,box.y+272,170,34}, accentF{box.x+200,box.y+272,170,34}, hsvBtn{box.x+380,box.y+272,62,34};
+            Rectangle hiddenR{box.x+14,box.y+310,125,30}, thumbsR{box.x+144,box.y+310,130,30}, beamR{box.x+279,box.y+310,135,30}, startupR{box.x+414,box.y+310,150,30};
             Rectangle apply{box.x+390,box.y+360,85,32}, cancel{box.x+485,box.y+360,65,32};
-            if(pointIn(themeF,mouse)) focusAt(st,TextField::ThemeNumber,mouse.x,themeF.x+8,13);
+            if(pointIn(hiddenR,mouse)) { st.config.showHidden=!st.config.showHidden; refresh(st); st.flags.configDirty=true; }
+            else if(pointIn(thumbsR,mouse)) { st.config.showThumbnails=!st.config.showThumbnails; st.flags.configDirty=true; }
+            else if(pointIn(beamR,mouse)) { st.config.cursorBeam=!st.config.cursorBeam; st.flags.cursorBeam=st.config.cursorBeam; if(st.flags.cursorBeam) HideCursor(); else ShowCursor(); st.flags.configDirty=true; }
+            else if(pointIn(startupR,mouse)) { st.config.showStartupShortcuts=!st.config.showStartupShortcuts; st.flags.configDirty=true; }
+            else if(pointIn(themeF,mouse)) focusAt(st,TextField::ThemeNumber,mouse.x,themeF.x+8,13);
             else if(pointIn(editorF,mouse)) focusAt(st,TextField::EditorConfig,mouse.x,editorF.x+8,13);
             else if(pointIn(termF,mouse)) focusAt(st,TextField::TermConfig,mouse.x,termF.x+8,13);
             else if(pointIn(fontF,mouse)) focusAt(st,TextField::FontScale,mouse.x,fontF.x+8,13);
             else if(pointIn(accentF,mouse)) focusAt(st,TextField::AccentConfig,mouse.x,accentF.x+8,13);
             else if(pointIn(hsvBtn,mouse)){ st.config.accent=ColorFromHSV(std::fmod((float)(GetTime()*53.0),360.0f),0.72f,0.96f); st.config.accentCustom=true; st.accentEdit=hexRGB(st.config.accent); st.flags.configDirty=true; }
             else if(pointIn(apply,mouse)) {
-                int n=std::atoi(st.themeEdit.c_str()); if(n>=0&&n<(int)kThemes.size()) { st.config.theme=n; applySystemTheme(st.config.systemTheme); }
-                st.config.editor=st.editorEdit; st.config.term=st.termEdit; st.config.fontScale=std::clamp(std::strtof(st.fontScaleEdit.c_str(),nullptr),1.0f,2.5f); gUIFontScale=st.config.fontScale;
+                int n=std::atoi(st.themeEdit.c_str()); if(n>=0&&n<(int)kThemes.size()) { st.config.theme=n; applySystemTheme(st.config.systemTheme); if(!st.config.accentCustom) st.config.accent=kThemes[n].accent; }
+                st.config.editor=st.editorEdit.empty()?"leafpad":st.editorEdit;
+                st.config.term=st.termEdit.empty()?"gamma-terminal":st.termEdit;
+                st.config.fontScale=std::clamp(std::strtof(st.fontScaleEdit.c_str(),nullptr),1.0f,2.5f); gUIFontScale=st.config.fontScale;
                 st.config.accent=accentFromHSVField(st.accentEdit, st.config.accent); st.config.accentCustom=true; st.flags.configDirty=true; st.modal=Modal::None; unfocus(st);
             } else if(pointIn(cancel,mouse)){ st.modal=Modal::None; unfocus(st); }
             else { int yy=(int)box.y+100; for(int i=0;i<(int)kThemes.size();++i){ Rectangle r{box.x+330,(float)yy-3,230,18}; if(pointIn(r,mouse)){ st.themeEdit=std::to_string(i); st.config.theme=i; applySystemTheme(st.config.systemTheme); if(!st.config.accentCustom) st.config.accent=kThemes[i].accent; st.flags.configDirty=true; } yy+=17; } }
@@ -4176,16 +4576,12 @@ int main(int argc, char** argv) {
             else if(pointIn(cancel,mouse)){ st.pendingPermanentDelete.clear(); st.modal=Modal::None; unfocus(st); }
         }
         if(st.modal==Modal::PasteOverwrite && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)){
-            Rectangle box{W*0.5f-290,H*0.5f-220,580,440}; Rectangle apply{box.x+360,box.y+180,100,32}, cancel{box.x+470,box.y+180,70,32};
-            if(pointIn(apply,mouse)){
-                if (finishPasteOne(st, st.pendingPasteSource, st.pendingPasteDestination, st.flags.pendingPasteCut, true)) {
-                    ++st.pendingPasteIndex;
-                    st.modal = Modal::None;
-                    unfocus(st);
-                    continuePasteClipboard(st);
-                }
-            }
-            else if(pointIn(cancel,mouse)){ st.modal=Modal::None; unfocus(st); }
+            Rectangle box{W*0.5f-290,H*0.5f-220,580,440};
+            Rectangle replace{box.x+20,box.y+180,105,34}, skip{box.x+140,box.y+180,75,34}, keepBoth{box.x+230,box.y+180,110,34}, cancel{box.x+445,box.y+180,85,34};
+            if(pointIn(replace,mouse)) resolvePasteConflict(st,0);
+            else if(pointIn(skip,mouse)) resolvePasteConflict(st,1);
+            else if(pointIn(keepBoth,mouse)) resolvePasteConflict(st,2);
+            else if(pointIn(cancel,mouse)) resolvePasteConflict(st,3);
         }
         if(st.modal==Modal::Properties && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
             const PropertiesLayout pu=propertiesLayout(W,H,st.props.multi);
@@ -4217,7 +4613,7 @@ int main(int argc, char** argv) {
         }
     }
     persistActiveTab(st);
-    if (st.flags.configDirty) saveConfig(st.config);
+    if (st.flags.configDirty) saveConfig(st.config,true);
     for(auto& kv:st.thumbnailCache) if(kv.second.id) UnloadTexture(kv.second);
     st.thumbnailCache.clear();
     st.thumbnailUse.clear();
