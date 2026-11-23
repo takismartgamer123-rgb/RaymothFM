@@ -429,8 +429,8 @@ static std::array<Theme, 12> kThemes = {{
 }};
 
 struct Config {
-    int theme = 0;
-    Color accent = kThemes[0].accent;
+    int theme = 6; // Gamma default: Purple.
+    Color accent = kThemes[6].accent;
     bool accentCustom = false;
     bool showHidden = false;
     bool showThumbnails = true;
@@ -438,12 +438,13 @@ struct Config {
     float fontScale = 1.15f;
     bool cursorBeam = true;
     float beamSize = 0.1f; // 0.1 = current/default beam size
+    bool showStartupShortcuts = true;
     std::array<Color, 8> systemTheme{{
         colorHex(0x000000), colorHex(0x000000), colorHex(0x000000), colorHex(0xffffff),
         colorHex(0xc8c8c8), colorHex(0x303030), colorHex(0x111111), colorHex(0xffffff)
     }}; // bg,panel,panel2,text,muted,line,hover,accent
-    std::string editor;
-    std::string term = "foot";
+    std::string editor = "leafpad";
+    std::string term = "gamma-terminal";
     std::vector<std::string> favorites;
     fs::path dir;
     fs::path file;
@@ -569,13 +570,15 @@ static Config loadConfig() {
         else if (key == "font_scale") c.fontScale = std::clamp(std::strtof(value.c_str(), nullptr), 1.0f, 2.5f);
         else if (key == "cursorbeam") c.cursorBeam = std::atoi(value.c_str()) != 0;
         else if (key == "beamsize") c.beamSize = std::clamp(std::strtof(value.c_str(), nullptr), 0.01f, 2.0f);
+        else if (key == "show_startup_shortcuts") c.showStartupShortcuts = std::atoi(value.c_str()) != 0;
         else if (key == "systemtheme" || key == "SYSTEMTHEME") parseSystemTheme(value, c.systemTheme);
         else if (key == "editor" || key == "EDITOR") { c.editor = value; if(c.editor.size()>=2 && c.editor.front()=='"' && c.editor.back()=='"') c.editor=c.editor.substr(1,c.editor.size()-2); }
         else if (key == "term" || key == "TERM") { c.term = value; if(c.term.size()>=2 && c.term.front()=='"' && c.term.back()=='"') c.term=c.term.substr(1,c.term.size()-2); }
         else if (key == "favorite" && !value.empty()) c.favorites.push_back(value);
     }
 
-    if (c.editor.empty()) { const char* env=std::getenv("EDITOR"); if(env && *env) c.editor=env; }
+    if (c.editor.empty()) c.editor = "leafpad";
+    if (c.term.empty()) c.term = "gamma-terminal";
 
     if (c.favorites.empty()) {
         const std::array<std::pair<const char*, const char*>, 5> defaults = {{{"Desktop", "Desktop"}, {"Documents", "Documents"}, {"Downloads", "Downloads"}, {"Music", "Music"}, {"Pictures", "Pictures"}}};
@@ -603,6 +606,7 @@ static void saveConfig(const Config& c, bool allowCreate = false) {
     out << "font_scale=" << c.fontScale << "\n";
     out << "cursorbeam=" << (c.cursorBeam ? 1 : 0) << "\n";
     out << "beamsize=" << c.beamSize << "\n";
+    out << "show_startup_shortcuts=" << (c.showStartupShortcuts ? 1 : 0) << "\n";
     out << "systemtheme=";
     for (size_t i = 0; i < c.systemTheme.size(); ++i) {
         if (i) out << ",";
@@ -625,8 +629,10 @@ static bool writeTemplateConfig() {
         std::fprintf(stderr, "raymothfm: config already exists: %s\n", c.file.c_str());
         return false;
     }
-    c.editor = "";
-    c.term = "foot";
+    c.theme = 6;
+    c.accent = kThemes[6].accent;
+    c.editor = "leafpad";
+    c.term = "gamma-terminal";
     c.fontScale = 1.15f;
     c.cursorBeam = true;
     c.beamSize = 0.1f;
@@ -3572,7 +3578,7 @@ int main(int argc, char** argv) {
     st.flags.cursorBeam = st.config.cursorBeam;
     if (st.flags.cursorBeam) HideCursor(); else ShowCursor();
     gUIFontScale = st.config.fontScale;
-    st.config.accent = st.config.accent.a == 0 ? kThemes[st.config.theme].accent : st.config.accent;
+    if (!st.config.accentCustom) st.config.accent = kThemes[st.config.theme].accent;
 
     fs::path start=homeDir();
     openLocalPath(st,start);
