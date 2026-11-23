@@ -2140,7 +2140,7 @@ static bool copyRecursive(const fs::path& src, const fs::path& dst, std::string&
     if (fs::is_directory(st)) {
         fs::create_directories(dst, ec);
         if (ec) { error = ec.message(); return false; }
-        fs::directory_iterator it(src, fs::directory_options::skip_permission_denied, ec), endIt;
+        fs::directory_iterator it(src, fs::directory_options::none, ec), endIt;
         if (ec) { error = ec.message(); return false; }
         for (; it != endIt; it.increment(ec)) {
             if (ec) { error = ec.message(); return false; }
@@ -2207,8 +2207,9 @@ static bool finishPasteOne(const fs::path& src, const fs::path& dst, bool cut, b
     for (int attempt=0; attempt<16; ++attempt) {
         const std::string suffix = ".raymothfm-" + std::to_string((long long)getpid()) + "-" +
                                    std::to_string(++sequence) + "-" + std::to_string(attempt);
-        staged = dst; staged += suffix + ".tmp";
-        backup = dst; backup += suffix + ".bak";
+        const fs::path parent=dst.parent_path();
+        staged = parent / (".raymothfm-" + suffix + ".tmp");
+        backup = parent / (".raymothfm-" + suffix + ".bak");
         std::error_code check;
         const bool stageExists = fs::exists(staged,check);
         if (check) continue;
